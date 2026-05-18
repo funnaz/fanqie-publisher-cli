@@ -772,6 +772,26 @@ async function findDraftRowForChapter(page, chapter) {
 }
 
 async function clickPublishInDraftRow(page, row) {
+  if (row) {
+    const editIconSelectors = [
+      ".auto-editor-draft-edit",
+      ".icon-edit.tomato-edit",
+      "span[class*='draft-edit']",
+      "span[class*='icon-edit']",
+    ];
+    for (const selector of editIconSelectors) {
+      try {
+        const icon = row.locator(selector).first();
+        if (await icon.count()) {
+          console.log("找到草稿行编辑图标，进入草稿编辑页。");
+          await icon.click({ timeout: 2500 });
+          await wait(1800);
+          return "opened-editor";
+        }
+      } catch {}
+    }
+  }
+
   const labels = ["发布", "发表", "提交发布", "立即发布"];
   if (row) {
     for (const label of labels) {
@@ -988,6 +1008,12 @@ async function publishDraftChapter(page, chapter) {
   }
   const clicked = await clickPublishInDraftRow(page, row);
   if (!clicked) return { ok: false, reason: "未找到草稿行里的发布按钮" };
+  if (clicked === "opened-editor") {
+    const editorPage = await selectEditorPage(page.context(), page);
+    const currentResult = await publishCurrentEditorDraft(editorPage, chapter);
+    if (currentResult.ok) return currentResult;
+    return { ok: false, reason: `已进入草稿编辑页，但发布失败：${currentResult.reason}` };
+  }
   await wait(800);
   const dialogResult = await confirmPublishDialogs(page);
   if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
