@@ -798,26 +798,44 @@ async function clickDialogButton(page, labels, timeout = 1200) {
   const dialog = page.locator(".arco-modal, .arco-modal-content, [role='dialog']").last();
   for (const label of labels) {
     try {
-      const button = dialog.getByRole("button", { name: new RegExp(label) }).first();
-      if (await button.count()) {
-        await button.click({ timeout });
+      const buttons = dialog.getByRole("button", { name: new RegExp(`^\\s*${label}\\s*$`) });
+      const count = await buttons.count();
+      if (count) {
+        await buttons.nth(count - 1).click({ timeout });
         return true;
       }
     } catch {}
     try {
-      const textButton = dialog.locator(`text=${label}`).last();
+      const textButton = dialog.locator(`button:has-text("${label}")`).last();
       if (await textButton.count()) {
         await textButton.click({ timeout });
         return true;
       }
     } catch {}
   }
-  return clickByTexts(page, labels, { timeout });
+  return false;
+}
+
+async function clickTypoSubmit(page) {
+  const clicked = await page.evaluate(() => {
+    const dialogs = Array.from(document.querySelectorAll(".arco-modal, .arco-modal-content, [role='dialog']"));
+    const dialog = dialogs.at(-1);
+    if (!dialog) return false;
+    const text = (dialog.textContent || "").replace(/\s+/g, "");
+    if (!text.includes("检测到你还存错别字未修改") && !text.includes("是否确定提交")) return false;
+    const buttons = Array.from(dialog.querySelectorAll("button"));
+    const submit = buttons.find((button) => (button.textContent || "").trim() === "提交") || buttons.at(-1);
+    if (!submit) return false;
+    submit.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    return true;
+  }).catch(() => false);
+  if (clicked) await wait(800);
+  return clicked;
 }
 
 async function confirmPublishDialogs(page) {
   for (let i = 0; i < 8; i++) {
-    const handledTypo = await clickDialogButton(page, ["提交"], 900);
+    const handledTypo = await clickTypoSubmit(page);
     if (handledTypo) {
       await wait(1000);
       continue;
