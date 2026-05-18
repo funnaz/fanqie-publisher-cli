@@ -794,12 +794,73 @@ async function clickPublishInDraftRow(page, row) {
   return clickByTexts(page, labels, { timeout: 2500 });
 }
 
-async function confirmPublishDialogs(page) {
-  for (let i = 0; i < 4; i++) {
-    const clicked = await clickByTexts(page, ["确认发布", "确定发布", "确认", "确定", "发布"], { timeout: 1200 });
-    if (!clicked) break;
-    await wait(800);
+async function clickDialogButton(page, labels, timeout = 1200) {
+  const dialog = page.locator(".arco-modal, .arco-modal-content, [role='dialog']").last();
+  for (const label of labels) {
+    try {
+      const button = dialog.getByRole("button", { name: new RegExp(label) }).first();
+      if (await button.count()) {
+        await button.click({ timeout });
+        return true;
+      }
+    } catch {}
+    try {
+      const textButton = dialog.locator(`text=${label}`).last();
+      if (await textButton.count()) {
+        await textButton.click({ timeout });
+        return true;
+      }
+    } catch {}
   }
+  return clickByTexts(page, labels, { timeout });
+}
+
+async function confirmPublishDialogs(page) {
+  for (let i = 0; i < 8; i++) {
+    const handledTypo = await clickDialogButton(page, ["提交"], 900);
+    if (handledTypo) {
+      await wait(1000);
+      continue;
+    }
+
+    const handledCheck = await clickDialogButton(page, ["仅基础检测", "基础检测"], 900);
+    if (handledCheck) {
+      await wait(1200);
+      continue;
+    }
+
+    await chooseAiYes(page);
+
+    const handledPublish = await clickDialogButton(page, ["确认发布", "确定发布", "确认", "确定", "发布"], 900);
+    if (handledPublish) {
+      await wait(1200);
+      continue;
+    }
+
+    break;
+  }
+}
+
+async function chooseAiYes(page) {
+  const ok = await page.evaluate(() => {
+    const textOf = (node) => (node.textContent || "").replace(/\s+/g, "");
+    const labels = Array.from(document.querySelectorAll("label, .arco-radio, .arco-radio-group, div, span"));
+    const aiArea = labels.find((node) => textOf(node).includes("是否使用AI"));
+    if (!aiArea) return false;
+
+    const container = aiArea.closest(".arco-modal, .arco-modal-content, [role='dialog'], body") || document.body;
+    const candidates = Array.from(container.querySelectorAll("label, .arco-radio, span, div, input"));
+    for (const candidate of candidates) {
+      const text = textOf(candidate);
+      if (text === "是" || text.endsWith("是")) {
+        const clickable = candidate.closest("label, .arco-radio") || candidate;
+        clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+        return true;
+      }
+    }
+    return false;
+  }).catch(() => false);
+  if (ok) await wait(500);
 }
 
 async function publishDraftChapter(page, chapter) {
