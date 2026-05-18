@@ -817,6 +817,37 @@ async function clickDialogButton(page, labels, timeout = 1200) {
 }
 
 async function clickTypoSubmit(page) {
+  const submitBox = await page.evaluate(() => {
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const modals = Array.from(document.querySelectorAll(".arco-modal"))
+      .filter((modal) => isVisible(modal) && /检测到你还存错别字未修改|是否确定提交/.test(modal.textContent || ""));
+    const modal = modals.at(-1);
+    if (!modal) return null;
+
+    const buttons = Array.from(modal.querySelectorAll("button")).filter(isVisible);
+    const submit = buttons.find((button) => (button.textContent || "").trim() === "提交");
+    const primary = modal.querySelector(".arco-modal-footer button.arco-btn-primary");
+    const target = submit || primary || buttons.at(-1);
+    if (!target) return null;
+    const rect = target.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      text: (target.textContent || "").trim(),
+      className: target.className,
+    };
+  }).catch(() => null);
+  if (submitBox) {
+    console.log(`点击错别字提示按钮：text="${submitBox.text}" x=${Math.round(submitBox.x)} y=${Math.round(submitBox.y)}`);
+    await page.mouse.click(submitBox.x, submitBox.y);
+    await wait(1200);
+    return true;
+  }
+
   try {
     const modal = page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last();
     if (await modal.count()) {
