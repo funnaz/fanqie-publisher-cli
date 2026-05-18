@@ -842,6 +842,67 @@ async function clickTypoSubmit(page) {
   return false;
 }
 
+async function clickBasicCheck(page) {
+  const modal = page.locator(".arco-modal").filter({ hasText: /请选择内容检测方式|基础检测|全面检测/ }).last();
+  try {
+    if (await modal.count() && await modal.isVisible()) {
+      await wait(2000);
+      const button = modal.locator("button").filter({ hasText: /^仅基础检测$/ }).last();
+      if (await button.count()) {
+        console.log("点击内容检测方式：仅基础检测。");
+        await button.click({ timeout: 3000 });
+        await wait(2000);
+        return true;
+      }
+      console.log("未找到精确“仅基础检测”按钮，暂停等待手动处理。");
+      return false;
+    }
+  } catch {}
+  return false;
+}
+
+async function handlePublishSettings(page) {
+  const modal = page.locator(".arco-modal").filter({ hasText: /发布设置|是否使用AI|确认发布/ }).last();
+  try {
+    if (!(await modal.count()) || !(await modal.isVisible())) return false;
+
+    await wait(2000);
+    await chooseAiYesInPublishSettings(page);
+    await wait(2000);
+
+    const confirm = modal.locator(".arco-modal-footer button.arco-btn-primary").filter({ hasText: /^确认发布$/ }).last();
+    if (await confirm.count()) {
+      console.log("点击发布设置：确认发布。");
+      await confirm.click({ timeout: 3000 });
+      await wait(2500);
+      return true;
+    }
+
+    console.log("未找到精确“确认发布”按钮，暂停等待手动处理。");
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function chooseAiYesInPublishSettings(page) {
+  const clicked = await page.evaluate(() => {
+    const modals = Array.from(document.querySelectorAll(".arco-modal"))
+      .filter((modal) => /发布设置|是否使用AI/.test(modal.textContent || ""));
+    const modal = modals.at(-1);
+    if (!modal) return false;
+
+    const candidates = Array.from(modal.querySelectorAll("label, .arco-radio, span"));
+    const yes = candidates.find((node) => (node.textContent || "").trim() === "是");
+    const clickable = yes?.closest("label, .arco-radio") || yes;
+    if (!clickable) return false;
+    clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    return true;
+  }).catch(() => false);
+  if (clicked) console.log("发布设置：已选择是否使用AI=是。");
+  return clicked;
+}
+
 async function confirmPublishDialogs(page) {
   for (let i = 0; i < 8; i++) {
     const typoModalVisible = await page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last().isVisible().catch(() => false);
@@ -852,15 +913,19 @@ async function confirmPublishDialogs(page) {
     }
     if (typoModalVisible) return { needsManual: true, reason: "错别字提示弹窗未能精确点击提交" };
 
-    const handledCheck = await clickDialogButton(page, ["仅基础检测", "基础检测"], 900);
+    const handledCheck = await clickBasicCheck(page);
     if (handledCheck) {
       await wait(2000);
       continue;
     }
 
-    await chooseAiYes(page);
+    const handledPublishSettings = await handlePublishSettings(page);
+    if (handledPublishSettings) {
+      await wait(2500);
+      continue;
+    }
 
-    const handledPublish = await clickDialogButton(page, ["确认发布", "确定发布", "确认", "确定", "发布"], 900);
+    const handledPublish = await clickDialogButton(page, ["确认发布", "确定发布"], 900);
     if (handledPublish) {
       await wait(2000);
       continue;
