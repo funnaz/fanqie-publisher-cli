@@ -817,6 +817,18 @@ async function clickDialogButton(page, labels, timeout = 1200) {
 }
 
 async function clickTypoSubmit(page) {
+  try {
+    const modal = page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last();
+    if (await modal.count()) {
+      const primary = modal.locator(".arco-modal-footer button.arco-btn-primary").last();
+      if (await primary.count()) {
+        await primary.click({ timeout: 2000, force: true });
+        await wait(1000);
+        return true;
+      }
+    }
+  } catch {}
+
   const clicked = await page.evaluate(() => {
     const dialogs = Array.from(document.querySelectorAll(".arco-modal"));
     const dialog = dialogs.at(-1);
