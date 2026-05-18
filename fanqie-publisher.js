@@ -843,7 +843,19 @@ async function clickTypoSubmit(page) {
   }).catch(() => null);
   if (submitBox) {
     console.log(`点击错别字提示按钮：text="${submitBox.text}" x=${Math.round(submitBox.x)} y=${Math.round(submitBox.y)}`);
+    await page.locator(".arco-modal:has-text('检测到你还存错别字未修改') .arco-modal-footer button.arco-btn-primary").last().click({ timeout: 1000, force: true }).catch(() => {});
     await page.mouse.click(submitBox.x, submitBox.y);
+    await page.evaluate(() => {
+      const modal = Array.from(document.querySelectorAll(".arco-modal"))
+        .filter((node) => /检测到你还存错别字未修改|是否确定提交/.test(node.textContent || ""))
+        .at(-1);
+      const target = modal?.querySelector(".arco-modal-footer button.arco-btn-primary");
+      if (!target) return false;
+      for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
+        target.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true, cancelable: true, view: window }));
+      }
+      return true;
+    }).catch(() => false);
     await wait(1200);
     return true;
   }
