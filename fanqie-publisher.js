@@ -818,15 +818,18 @@ async function clickDialogButton(page, labels, timeout = 1200) {
 
 async function clickTypoSubmit(page) {
   const clicked = await page.evaluate(() => {
-    const dialogs = Array.from(document.querySelectorAll(".arco-modal, .arco-modal-content, [role='dialog']"));
+    const dialogs = Array.from(document.querySelectorAll(".arco-modal"));
     const dialog = dialogs.at(-1);
     if (!dialog) return false;
     const text = (dialog.textContent || "").replace(/\s+/g, "");
     if (!text.includes("检测到你还存错别字未修改") && !text.includes("是否确定提交")) return false;
-    const buttons = Array.from(dialog.querySelectorAll("button"));
-    const submit = buttons.find((button) => (button.textContent || "").trim() === "提交") || buttons.at(-1);
-    if (!submit) return false;
-    submit.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+
+    const primary = dialog.querySelector(".arco-modal-footer button.arco-btn-primary");
+    const exactSubmit = Array.from(dialog.querySelectorAll("button")).find((button) => (button.textContent || "").trim() === "提交");
+    const target = primary || exactSubmit;
+    if (!target) return false;
+
+    target.click();
     return true;
   }).catch(() => false);
   if (clicked) await wait(800);
