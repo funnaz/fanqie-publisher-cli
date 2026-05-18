@@ -1000,6 +1000,7 @@ async function chooseAiYes(page) {
 
 async function publishDraftChapter(page, chapter) {
   await dismissTutorialOverlays(page);
+  await ensureDraftBoxTab(page);
   const row = await findDraftRowForChapter(page, chapter);
   if (!row) {
     const currentResult = await publishCurrentEditorDraft(page, chapter);
@@ -1019,6 +1020,26 @@ async function publishDraftChapter(page, chapter) {
   if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
   await wait(1200);
   return { ok: true };
+}
+
+async function ensureDraftBoxTab(page) {
+  const hasDraftList = await page.locator("text=/共\\d+篇草稿|草稿箱/").count().catch(() => 0);
+  const draftTab = page.locator("text=草稿箱").first();
+  try {
+    if (await draftTab.count()) {
+      const maybeSelected = await draftTab.evaluate((node) => {
+        const text = node.textContent || "";
+        const cls = node.className || "";
+        const parentCls = node.parentElement?.className || "";
+        return text.includes("草稿箱") && (String(cls).includes("active") || String(parentCls).includes("active"));
+      }).catch(() => false);
+      if (!maybeSelected || hasDraftList === 0) {
+        console.log("切换到草稿箱。");
+        await draftTab.click({ timeout: 2500 });
+        await wait(1500);
+      }
+    }
+  } catch {}
 }
 
 async function getCurrentEditorChapterInfo(page) {
