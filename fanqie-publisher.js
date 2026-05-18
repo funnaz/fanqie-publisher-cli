@@ -817,6 +817,29 @@ async function clickDialogButton(page, labels, timeout = 1200) {
 }
 
 async function clickTypoSubmit(page) {
+  const modalLocator = page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last();
+  try {
+    if (await modalLocator.count()) {
+      await wait(2000);
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const button = modalLocator.locator(".arco-modal-footer button.arco-btn-primary").last();
+        await button.waitFor({ state: "visible", timeout: 3000 });
+        const disabled = await button.evaluate((el) => el.disabled || el.getAttribute("aria-disabled") === "true" || el.className.includes("disabled")).catch(() => false);
+        if (disabled) {
+          await wait(1000);
+          continue;
+        }
+        const box = await button.boundingBox();
+        console.log(`第 ${attempt} 次点击错别字提交按钮，等待后点击。`);
+        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+        else await button.click({ timeout: 2000, force: true });
+        await wait(2500);
+        const stillVisible = await modalLocator.isVisible().catch(() => false);
+        if (!stillVisible) return true;
+      }
+    }
+  } catch {}
+
   const submitBox = await page.evaluate(() => {
     const isVisible = (el) => {
       const rect = el.getBoundingClientRect();
