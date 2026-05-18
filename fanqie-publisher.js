@@ -825,17 +825,37 @@ async function clickTypoSubmit(page) {
   try {
     if (await modalLocator.count()) {
       await wait(2000);
-      const exactSubmit = modalLocator.locator(".arco-modal-footer button").filter({ hasText: /^提交$/ }).last();
-      if (await exactSubmit.count()) {
-        const disabled = await exactSubmit.evaluate((el) => el.disabled || el.getAttribute("aria-disabled") === "true" || String(el.className).includes("disabled")).catch(() => false);
-        if (!disabled) {
-          console.log("点击错别字提示弹窗中的精确“提交”按钮。");
-          await exactSubmit.click({ timeout: 3000 });
-          await wait(2500);
-          return true;
-        }
+      const result = await page.evaluate(() => {
+        const modals = Array.from(document.querySelectorAll(".arco-modal"))
+          .filter((modal) => /检测到你还存错别字未修改|是否确定提交/.test(modal.textContent || ""));
+        const modal = modals.at(-1);
+        if (!modal) return { ok: false, reason: "no modal" };
+
+        const buttons = Array.from(modal.querySelectorAll(".arco-modal-footer button"));
+        const summary = buttons.map((button, index) => ({
+          index,
+          text: (button.textContent || "").trim(),
+          className: String(button.className || ""),
+          disabled: Boolean(button.disabled) || button.getAttribute("aria-disabled") === "true",
+        }));
+        const submit = buttons.find((button) => (button.textContent || "").trim() === "提交");
+        if (!submit) return { ok: false, reason: "no submit", summary };
+        if (submit.disabled || submit.getAttribute("aria-disabled") === "true") return { ok: false, reason: "submit disabled", summary };
+
+        submit.focus();
+        submit.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true }));
+        submit.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true, composed: true }));
+        submit.click();
+        return { ok: true, summary };
+      }).catch((error) => ({ ok: false, reason: error.message || String(error), summary: [] }));
+
+      console.log(`错别字弹窗按钮：${JSON.stringify(result.summary || [])}`);
+      if (result.ok) {
+        console.log("已触发错别字提示弹窗中的“提交”按钮。");
+        await wait(3000);
+        return true;
       }
-      console.log("未找到精确“提交”按钮，暂停等待手动处理。");
+      console.log(`未能触发“提交”按钮：${result.reason || "unknown"}，暂停等待手动处理。`);
       return false;
     }
   } catch {}
