@@ -30,6 +30,7 @@ function parseArgs(argv) {
     dryRun: false,
     strictQuality: true,
     inspect: false,
+    publishDrafts: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -54,12 +55,13 @@ function parseArgs(argv) {
     else if (key === "--draft") args.mode = "draft";
     else if (key === "--no-strict-quality") args.strictQuality = false;
     else if (key === "--inspect-page") args.inspect = true;
+    else if (key === "--publish-drafts") args.publishDrafts = true, args.mode = "publish-drafts";
     else if (key === "--headless") args.headless = true;
     else if (key === "--help" || key === "-h") args.help = true;
   }
 
-  if (!["dry-run", "draft", "publish"].includes(args.mode)) {
-    throw new Error("--mode 只能是 dry-run、draft 或 publish");
+  if (!["dry-run", "draft", "publish", "publish-drafts"].includes(args.mode)) {
+    throw new Error("--mode 只能是 dry-run、draft、publish 或 publish-drafts");
   }
   return args;
 }
@@ -118,6 +120,7 @@ function printHelp() {
   --dry-run         只做本地检查，不打开浏览器，不填后台
   --draft           保存草稿模式，默认模式
   --publish         正式发布模式
+  --publish-drafts  从草稿箱/章节管理页按章节范围发布已存在草稿
   --confirm-each    每章填完后暂停确认
   --confirm-every   每 N 章暂停确认一次
   --reset           清空本次范围的断点记录，从头处理
@@ -747,6 +750,70 @@ async function submitChapter(page, mode) {
   return clickByTexts(page, ["保存草稿", "存草稿", "保存", "暂存"], { timeout: 3500 });
 }
 
+async function findDraftRowForChapter(page, chapter) {
+  const escapedTitle = chapter.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    `第\\s*${chapter.no}\\s*章`,
+    `第\\s*${chapter.chapterNoText}\\s*章`,
+    escapedTitle,
+  ];
+
+  for (const pattern of patterns) {
+    const textLocator = page.locator(`text=/${pattern}/`).first();
+    try {
+      if (await textLocator.count()) {
+        const row = textLocator.locator("xpath=ancestor::*[self::tr or contains(@class,'item') or contains(@class,'card') or contains(@class,'chapter') or contains(@class,'draft') or contains(@class,'list')][1]");
+        if (await row.count()) return row.first();
+        return textLocator.locator("xpath=ancestor::div[1]").first();
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function clickPublishInDraftRow(page, row) {
+  const labels = ["发布", "发表", "提交发布", "立即发布"];
+  if (row) {
+    for (const label of labels) {
+      const button = row.getByRole("button", { name: new RegExp(label) }).first();
+      try {
+        if (await button.count()) {
+          await button.click({ timeout: 2500 });
+          return true;
+        }
+      } catch {}
+      const textButton = row.locator(`text=${label}`).first();
+      try {
+        if (await textButton.count()) {
+          await textButton.click({ timeout: 2500 });
+          return true;
+        }
+      } catch {}
+    }
+  }
+  return clickByTexts(page, labels, { timeout: 2500 });
+}
+
+async function confirmPublishDialogs(page) {
+  for (let i = 0; i < 4; i++) {
+    const clicked = await clickByTexts(page, ["确认发布", "确定发布", "确认", "确定", "发布"], { timeout: 1200 });
+    if (!clicked) break;
+    await wait(800);
+  }
+}
+
+async function publishDraftChapter(page, chapter) {
+  await dismissTutorialOverlays(page);
+  const row = await findDraftRowForChapter(page, chapter);
+  if (!row) return { ok: false, reason: "未找到对应草稿行" };
+  const clicked = await clickPublishInDraftRow(page, row);
+  if (!clicked) return { ok: false, reason: "未找到草稿行里的发布按钮" };
+  await wait(800);
+  await confirmPublishDialogs(page);
+  await wait(1200);
+  return { ok: true };
+}
+
 async function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -814,7 +881,7 @@ async function main() {
   const pending = chapters.filter((chapter) => !completed.has(chapter.no));
   console.log(`书名/项目：${args.book}`);
   console.log(`章节目录：${args.chapters}`);
-  console.log(`运行模式：${args.mode === "publish" ? "正式发布" : "保存草稿"}`);
+  console.log(`运行模式：${args.mode === "publish-drafts" ? "发布草稿箱章节" : args.mode === "publish" ? "正式发布" : "保存草稿"}`);
   console.log(`断点：已完成 ${completed.size} 章，待处理 ${pending.length} 章。记录目录：${RUNS_DIR}`);
   logLine(runId, `开始运行，待处理 ${pending.length} 章，模式 ${args.mode}`);
 
@@ -838,6 +905,41 @@ async function main() {
     await inspectPage(editorPage, runId);
     rl.close();
     console.log("诊断完成，没有填写任何内容。");
+    return;
+  }
+
+  if (args.mode === "publish-drafts") {
+    console.log("草稿发布模式：请确保当前页面是草稿箱或章节管理页，且能看到待发布章节列表。");
+    let processedDrafts = 0;
+    for (const chapter of pending) {
+      console.log(`准备发布第 ${chapter.no} 章：${chapter.title}`);
+      logLine(runId, `准备发布草稿第 ${chapter.no} 章：${chapter.title}`);
+      try {
+        const result = await publishDraftChapter(editorPage, chapter);
+        if (!result.ok) {
+          await saveFailure(editorPage, runId, chapter, result.reason);
+          console.log(`第 ${chapter.no} 章未能自动发布：${result.reason}`);
+          await rl.question("请手动处理该章，完成后按回车继续，或按 Ctrl+C 停止...");
+        }
+        state.completed.push(chapter.no);
+        saveState(runId, state);
+        processedDrafts++;
+        if (args.confirmEach) {
+          await rl.question(`第 ${chapter.no} 章处理完成。检查后台后按回车继续...`);
+        }
+        if (args.confirmEvery > 0 && processedDrafts % args.confirmEvery === 0) {
+          await rl.question(`已处理 ${processedDrafts} 章。检查后台后按回车继续...`);
+        }
+      } catch (error) {
+        state.failed.push({ no: chapter.no, message: error.message || String(error), time: new Date().toISOString() });
+        saveState(runId, state);
+        await saveFailure(editorPage, runId, chapter, error.message || String(error));
+        throw error;
+      }
+    }
+    rl.close();
+    logLine(runId, "草稿发布模式运行完成");
+    console.log("草稿发布处理完成。");
     return;
   }
 

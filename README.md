@@ -9,6 +9,7 @@
 - 自动填写章节号、章节名、正文
 - 自动删除正文第一行的“第x章 章节名”
 - 保存草稿后切换到新的章节编辑页，避免覆盖上一章
+- 可从草稿箱/章节管理页按章节范围发布已保存草稿
 - 支持断点续传、失败截图、页面诊断
 - 支持发布前质量检查
 - 支持 JSON 配置文件
@@ -55,6 +56,14 @@ npm run fanqie -- --chapters "D:\novels\某本书\chapters" --dry-run --start 1 
 ```powershell
 npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 1 --end 3 --confirm-each --reset
 ```
+
+## 发布草稿箱章节
+
+```powershell
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --publish-drafts --start 1 --end 3 --confirm-each --reset
+```
+
+运行后手动进入番茄后台的草稿箱或章节管理页，再回命令窗口按回车。
 
 ## 使用配置文件
 
