@@ -801,14 +801,18 @@ async function clickDialogButton(page, labels, timeout = 1200) {
       const buttons = dialog.getByRole("button", { name: new RegExp(`^\\s*${label}\\s*$`) });
       const count = await buttons.count();
       if (count) {
+        await wait(2000);
         await buttons.nth(count - 1).click({ timeout });
+        await wait(1200);
         return true;
       }
     } catch {}
     try {
       const textButton = dialog.locator(`button:has-text("${label}")`).last();
       if (await textButton.count()) {
+        await wait(2000);
         await textButton.click({ timeout });
+        await wait(1200);
         return true;
       }
     } catch {}
@@ -918,13 +922,13 @@ async function confirmPublishDialogs(page) {
   for (let i = 0; i < 8; i++) {
     const handledTypo = await clickTypoSubmit(page);
     if (handledTypo) {
-      await wait(1000);
+      await wait(2000);
       continue;
     }
 
     const handledCheck = await clickDialogButton(page, ["仅基础检测", "基础检测"], 900);
     if (handledCheck) {
-      await wait(1200);
+      await wait(2000);
       continue;
     }
 
@@ -932,7 +936,7 @@ async function confirmPublishDialogs(page) {
 
     const handledPublish = await clickDialogButton(page, ["确认发布", "确定发布", "确认", "确定", "发布"], 900);
     if (handledPublish) {
-      await wait(1200);
+      await wait(2000);
       continue;
     }
 
@@ -959,7 +963,7 @@ async function chooseAiYes(page) {
     }
     return false;
   }).catch(() => false);
-  if (ok) await wait(500);
+  if (ok) await wait(2000);
 }
 
 async function publishDraftChapter(page, chapter) {
