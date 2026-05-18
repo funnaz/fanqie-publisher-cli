@@ -5,7 +5,7 @@ const readline = require("readline/promises");
 const { stdin: input, stdout: output } = require("process");
 const { chromium } = require("playwright");
 
-const DEFAULT_CHAPTERS_DIR = path.join(process.cwd(), "苍生印_重写版", "chapters");
+const DEFAULT_CHAPTERS_DIR = "";
 const USER_DATA_DIR = path.join(process.cwd(), ".fanqie-browser-profile");
 const RUNS_DIR = path.join(process.cwd(), ".fanqie-runs");
 const DEFAULT_MIN_CHARS = 950;
@@ -13,6 +13,8 @@ const DEFAULT_MIN_CHARS = 950;
 function parseArgs(argv) {
   const args = {
     chapters: DEFAULT_CHAPTERS_DIR,
+    config: "",
+    book: "",
     start: 1,
     end: Infinity,
     mode: "draft",
@@ -34,6 +36,8 @@ function parseArgs(argv) {
     const key = argv[i];
     const next = argv[i + 1];
     if (key === "--chapters" && next) args.chapters = path.resolve(next), i++;
+    else if (key === "--config" && next) args.config = path.resolve(next), i++;
+    else if (key === "--book" && next) args.book = next, i++;
     else if (key === "--start" && next) args.start = Number(next), i++;
     else if (key === "--end" && next) args.end = Number(next), i++;
     else if (key === "--url" && next) args.url = next, i++;
@@ -60,17 +64,55 @@ function parseArgs(argv) {
   return args;
 }
 
+function loadConfig(configPath) {
+  if (!configPath) return {};
+  if (!fs.existsSync(configPath)) throw new Error(`配置文件不存在：${configPath}`);
+  const raw = fs.readFileSync(configPath, "utf8");
+  return JSON.parse(raw);
+}
+
+function normalizeArgs(args) {
+  const config = loadConfig(args.config);
+  const merged = { ...args };
+  for (const key of [
+    "chapters",
+    "book",
+    "url",
+    "newUrl",
+    "minChars",
+    "delay",
+    "confirmEvery",
+  ]) {
+    if ((merged[key] === "" || merged[key] === 0 || merged[key] === DEFAULT_MIN_CHARS) && config[key] !== undefined) {
+      merged[key] = config[key];
+    }
+  }
+  if (config.confirmEach && !args.confirmEach) merged.confirmEach = true;
+  if (config.strictQuality === false) merged.strictQuality = false;
+  if (merged.chapters) merged.chapters = path.resolve(merged.chapters);
+  if (!merged.book && merged.chapters) {
+    const normalized = path.resolve(merged.chapters);
+    const base = path.basename(normalized).toLowerCase() === "chapters"
+      ? path.basename(path.dirname(normalized))
+      : path.basename(normalized);
+    merged.book = base;
+  }
+  return merged;
+}
+
 function printHelp() {
   console.log(`
 番茄发布助手 CLI
 
 用法：
-  npm run fanqie -- --dry-run --start 1 --end 10
-  npm run fanqie -- --draft --start 1 --end 3
-  npm run fanqie -- --publish --start 1 --end 3 --confirm-each
+  npm run fanqie -- --chapters "D:\\novels\\某本书\\chapters" --dry-run --start 1 --end 10
+  npm run fanqie -- --chapters "D:\\novels\\某本书\\chapters" --draft --start 1 --end 3
+  npm run fanqie -- --config ".\\fanqie.config.json" --draft --start 1 --end 3
 
 常用参数：
-  --chapters        章节目录，默认：苍生印_重写版\\chapters
+  --chapters        章节目录，通常指向某本书的 chapters 文件夹
+  --config          JSON 配置文件，可保存 book、chapters、newUrl 等
+  --book            书名，用于日志和断点标识；不传时从 chapters 路径推断
   --start           起始章节号，默认 1
   --end             结束章节号，默认全部
   --dry-run         只做本地检查，不打开浏览器，不填后台
@@ -87,9 +129,10 @@ function printHelp() {
   --inspect-page    登录并进入编辑页后，只导出页面诊断，不填写内容
 
 流程：
-  1. 先运行 --dry-run 检查章节质量。
-  2. 再运行 --draft 保存少量章节为草稿。
-  3. 确认后台显示正常后，再扩大范围或使用 --publish。
+  1. 先用 --chapters 或 --config 指定要发布的小说。
+  2. 运行 --dry-run 检查章节质量。
+  3. 再运行 --draft 保存少量章节为草稿。
+  4. 确认后台显示正常后，再扩大范围或使用 --publish。
 `);
 }
 
@@ -224,7 +267,7 @@ function validateChapters(chapters, args) {
 
 function makeRunId(args) {
   const chapterRoot = path.resolve(args.chapters);
-  return safeName(`${chapterRoot}_${args.start}_${Number.isFinite(args.end) ? args.end : "all"}_${args.mode}`);
+  return safeName(`${args.book || "novel"}_${chapterRoot}_${args.start}_${Number.isFinite(args.end) ? args.end : "all"}_${args.mode}`);
 }
 
 function loadState(runId, args) {
@@ -716,8 +759,11 @@ async function launchBrowser(args) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv);
+  const args = normalizeArgs(parseArgs(process.argv));
   if (args.help) return printHelp();
+  if (!args.chapters) {
+    throw new Error("请用 --chapters 指定章节目录，或用 --config 指定配置文件。");
+  }
   if (!fs.existsSync(args.chapters)) throw new Error(`章节目录不存在：${args.chapters}`);
 
   const chapters = readChapters(args.chapters, args.start, args.end);
@@ -737,6 +783,8 @@ async function main() {
   const state = loadState(runId, args);
   const completed = new Set(state.completed);
   const pending = chapters.filter((chapter) => !completed.has(chapter.no));
+  console.log(`书名/项目：${args.book}`);
+  console.log(`章节目录：${args.chapters}`);
   console.log(`运行模式：${args.mode === "publish" ? "正式发布" : "保存草稿"}`);
   console.log(`断点：已完成 ${completed.size} 章，待处理 ${pending.length} 章。记录目录：${RUNS_DIR}`);
   logLine(runId, `开始运行，待处理 ${pending.length} 章，模式 ${args.mode}`);

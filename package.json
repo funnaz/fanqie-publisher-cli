@@ -1,8 +1,8 @@
 {
-  "name": "novel-publisher-tools",
+  "name": "fanqie-publisher-cli",
   "version": "1.0.0",
   "private": true,
-  "description": "Local tools for preparing and semi-automating novel uploads.",
+  "description": "Semi-automated Fanqie writer console uploader for arbitrary local novel chapters.",
   "scripts": {
     "fanqie": "node fanqie-publisher.js"
   },

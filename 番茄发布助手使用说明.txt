@@ -1,10 +1,10 @@
-番茄发布助手 CLI 使用手册
+番茄小说半自动发布助手 CLI 使用手册
 
 一、工具用途
 
-这个工具用于把本地 txt 章节半自动填入番茄作家后台。
+这个工具用于把任意本地 txt 小说章节半自动填入番茄作家后台。
 
-它不会保存账号密码，也不调用非公开接口。浏览器打开后，需要你自己登录番茄作家后台，并进入作品的章节页面。
+它不会保存账号密码，也不调用非公开接口。浏览器打开后，需要你自己登录番茄作家后台，并进入目标作品的章节页面。
 
 当前已测试跑通的能力：
 1. 自动扫描浏览器标签页，找到真正的章节编辑页。
@@ -14,62 +14,108 @@
 5. 自动删除正文第一行的“第x章 章节名”。
 6. 自动保存草稿。
 7. 保存后切换到新的章节编辑页，避免覆盖上一章。
-8. 支持断点续传、失败截图、页面诊断。
+8. 支持任意小说章节目录。
+9. 支持 JSON 配置文件。
+10. 支持断点续传、失败截图、页面诊断。
 
 
-二、目录要求
+二、章节目录要求
 
-默认章节目录：
-C:\Users\92003\Documents\写小说\苍生印_重写版\chapters
+推荐结构：
+某本书
+  chapters
+    001-第1章 开篇标题.txt
+    002-第2章 第二章标题.txt
 
-推荐章节文件格式：
-001-第1章 南槐县的空名册.txt
-002-第2章 县令夜审.txt
+也支持每 20 章一个子文件夹：
+某本书
+  chapters
+    001-020
+      001-第1章 开篇标题.txt
+      002-第2章 第二章标题.txt
 
-文件正文第一行推荐写：
-第1章 南槐县的空名册
+文件名必须以章节号开头：
+001-
+002-
+003-
+
+正文第一行推荐写：
+第1章 开篇标题
 
 后面空一行，再写正文。
 
-脚本会自动把第一行拆成：
+脚本会自动拆成：
 章节号：1
-章节名：南槐县的空名册
+章节名：开篇标题
 正文：删除第一行，只上传正文内容
 
 
 三、安装依赖
 
-在目录：
-C:\Users\92003\Documents\写小说
-
-执行：
+在项目目录执行：
 npm install
 
-如果已经安装过，不需要重复安装。
+
+四、两种使用方式
+
+方式 A：每次命令指定章节目录
+
+本地检查：
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --dry-run --start 1 --end 10
+
+保存草稿：
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 1 --end 3 --confirm-each --reset
+
+方式 B：使用配置文件
+
+复制：
+fanqie.config.example.json
+
+改名为：
+fanqie.config.json
+
+示例配置：
+{
+  "book": "示例书名",
+  "chapters": "D:/novels/示例书名/chapters",
+  "url": "https://fanqienovel.com/writer/zone",
+  "newUrl": "",
+  "minChars": 950,
+  "delay": 1200,
+  "confirmEvery": 5,
+  "confirmEach": false,
+  "strictQuality": true
+}
+
+使用配置检查：
+npm run fanqie -- --config ".\fanqie.config.json" --dry-run --start 1 --end 10
+
+使用配置保存草稿：
+npm run fanqie -- --config ".\fanqie.config.json" --draft --start 1 --end 3 --confirm-each --reset
 
 
-四、发布前检查
+五、发布前检查
 
 只检查本地章节，不打开浏览器：
-npm run fanqie -- --dry-run --start 1 --end 10
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --dry-run --start 1 --end 10
 
 检查内容：
 1. 是否缺章。
 2. 是否重复章节号。
 3. 标题是否为空。
 4. 正文是否为空。
-5. 正文字数是否低于 950 字。
+5. 正文字数是否低于最低字数。
 6. 是否有明显重复段落。
 7. 相邻章节相似度是否过高。
 
 修改最低字数：
-npm run fanqie -- --dry-run --start 1 --end 10 --min-chars 1000
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --dry-run --start 1 --end 10 --min-chars 1000
 
 
-五、草稿上传流程
+六、草稿上传流程
 
 推荐先小范围测试：
-npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 1 --end 3 --confirm-each --reset
 
 操作步骤：
 1. 命令窗口打开后，浏览器会自动打开番茄作家后台。
@@ -81,78 +127,71 @@ npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
 7. 如果带了 --confirm-each，每章填完会暂停，你检查后按回车保存草稿。
 8. 保存后，脚本会关闭当前编辑页，并尝试打开新的章节编辑页。
 
-已验证可用批次：
-npm run fanqie -- --draft --start 11 --end 20 --confirm-every 5 --reset
 
+七、避免覆盖上一章
 
-六、避免覆盖上一章
+保存草稿后，当前页面通常会变成“编辑已有草稿”的页面。如果继续使用这个页面，会覆盖上一章。
 
-关键点：保存草稿后，当前页面通常会变成“编辑已有草稿”的页面。如果继续使用这个页面，会覆盖上一章。
-
-脚本现在有两种处理方式。
+脚本有两种处理方式。
 
 方式 A：保留章节管理页
 
-这是当前手动测试成功的方式。
+这是已测试成功的方式。
 
 要求：
 1. 浏览器里保留一个“章节管理页”标签。
 2. 另一个标签是当前“新建章节”编辑页。
 3. 保存一章后，脚本会尝试回章节管理页点击“新建章节”，再继续下一章。
 
-运行示例：
-npm run fanqie -- --draft --start 21 --end 30 --confirm-every 5 --reset
-
 方式 B：指定真正的新建章节 URL
 
-如果你能拿到番茄后台“新建章节”的固定 URL，用这个方式更稳：
-npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset --new-url "把真正的新建章节URL粘到这里"
+如果你能拿到番茄后台“新建章节”的固定 URL，用这个方式：
+npm run fanqie -- --config ".\fanqie.config.json" --draft --start 1 --end 3 --confirm-each --reset --new-url "真正的新建章节URL"
 
 注意：
-不要把“保存后的草稿编辑 URL”当作 --new-url，否则仍然会覆盖。
+不要把保存后的草稿编辑 URL 当作 --new-url，否则仍然会覆盖。
 
 
-七、常用命令
+八、常用命令
 
 检查前 10 章：
-npm run fanqie -- --dry-run --start 1 --end 10
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --dry-run --start 1 --end 10
 
 保存前 3 章草稿，每章确认：
-npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 1 --end 3 --confirm-each --reset
 
 保存 11-20 章草稿，每 5 章暂停：
-npm run fanqie -- --draft --start 11 --end 20 --confirm-every 5 --reset
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 11 --end 20 --confirm-every 5 --reset
 
 继续 21-50 章草稿，每 10 章暂停：
-npm run fanqie -- --draft --start 21 --end 50 --confirm-every 10 --reset
-
-指定章节目录：
-npm run fanqie -- --chapters "C:\Users\92003\Documents\写小说\苍生印_重写版\chapters" --start 1 --end 10
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --draft --start 21 --end 50 --confirm-every 10 --reset
 
 正式发布模式：
-npm run fanqie -- --publish --start 1 --end 3 --confirm-each
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --publish --start 1 --end 3 --confirm-each
 
 正式发布前建议先保存草稿并人工检查，不建议直接大批量发布。
 
 
-八、断点续传
+九、断点续传
 
 脚本会把成功处理过的章节记录到：
-C:\Users\92003\Documents\写小说\.fanqie-runs
+.fanqie-runs
+
+断点记录会按书名、章节目录、章节范围、模式区分。
 
 同样命令再次运行时，会跳过已完成章节。
 
 从头重跑当前范围：
-npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+npm run fanqie -- --config ".\fanqie.config.json" --draft --start 1 --end 3 --confirm-each --reset
 
 忽略断点但不删除记录：
-npm run fanqie -- --draft --start 1 --end 3 --confirm-each --no-resume
+npm run fanqie -- --config ".\fanqie.config.json" --draft --start 1 --end 3 --confirm-each --no-resume
 
 
-九、页面诊断
+十、页面诊断
 
 如果脚本找不到输入框或编辑器，用诊断模式：
-npm run fanqie -- --draft --start 1 --end 1 --inspect-page --reset
+npm run fanqie -- --config ".\fanqie.config.json" --draft --start 1 --end 1 --inspect-page --reset
 
 操作：
 1. 浏览器打开后，进入番茄章节编辑页。
@@ -160,7 +199,7 @@ npm run fanqie -- --draft --start 1 --end 1 --inspect-page --reset
 3. 脚本不会填写任何内容，只会导出诊断文件。
 
 诊断文件位置：
-C:\Users\92003\Documents\写小说\.fanqie-runs
+.fanqie-runs
 
 诊断会输出：
 1. 脚本看到了几个 input。
@@ -179,10 +218,16 @@ input.serial-input.serial-editor-input-hint-area.byte-input.byte-input-size-defa
 .ProseMirror[contenteditable="true"]
 
 
-十、参数说明
+十一、参数说明
 
 --chapters
-章节目录。
+章节目录。通常指向某本书的 chapters 文件夹。
+
+--config
+JSON 配置文件路径。
+
+--book
+书名，用于日志和断点标识。不传时从 chapters 路径推断。
 
 --start
 起始章节号。
@@ -230,17 +275,18 @@ input.serial-input.serial-editor-input-hint-area.byte-input.byte-input-size-defa
 忽略质量检查里的警告，但不能忽略错误。
 
 
-十一、推荐使用策略
+十二、推荐使用策略
 
-1. 每次先 dry-run。
-2. 首次只跑 1-3 章，并使用 --confirm-each。
-3. 跑通后按 10 章或 20 章一批。
-4. 大批量上传时使用 --confirm-every 5 或 --confirm-every 10。
-5. 保留章节管理页标签，避免保存后找不到新建入口。
-6. 发布前先全部保存为草稿，再在番茄后台人工检查。
+1. 每换一本小说，先设置 --chapters 或新建一个 fanqie.config.json。
+2. 每次先 dry-run。
+3. 首次只跑 1-3 章，并使用 --confirm-each。
+4. 跑通后按 10 章或 20 章一批。
+5. 大批量上传时使用 --confirm-every 5 或 --confirm-every 10。
+6. 保留章节管理页标签，避免保存后找不到新建入口。
+7. 发布前先全部保存为草稿，再在番茄后台人工检查。
 
 
-十二、常见问题
+十三、常见问题
 
 问题：脚本显示 0 个 input、0 个编辑器。
 原因：脚本没有控制到真正的编辑页，或者当前标签不是编辑页。
