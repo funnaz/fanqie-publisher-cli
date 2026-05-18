@@ -455,6 +455,35 @@ async function clickByTexts(page, texts, options = {}) {
   return false;
 }
 
+async function dismissTutorialOverlays(page) {
+  const clickedLabels = [];
+  for (let i = 0; i < 8; i++) {
+    const clicked = await clickByTexts(page, ["跳过", "我知道了", "知道了", "完成", "下一步", "关闭"], { timeout: 800 });
+    if (!clicked) break;
+    clickedLabels.push("clicked");
+    await wait(500);
+  }
+
+  await page.keyboard.press("Escape").catch(() => {});
+  await page.evaluate(() => {
+    const selectors = [
+      ".arco-tour",
+      ".arco-tour-mask",
+      ".arco-modal-mask",
+      ".driver-popover",
+      ".introjs-overlay",
+      ".introjs-tooltip",
+    ];
+    for (const selector of selectors) {
+      document.querySelectorAll(selector).forEach((node) => {
+        const el = node;
+        if (el && el.style) el.style.display = "none";
+      });
+    }
+  }).catch(() => {});
+  return clickedLabels.length;
+}
+
 async function fillFirstInput(page, includePattern, value, excludePattern) {
   const inputs = page.locator("input");
   const count = await inputs.count().catch(() => 0);
@@ -820,9 +849,13 @@ async function main() {
     logLine(runId, `开始第 ${chapter.no} 章：${chapter.title}`);
 
     try {
+      const dismissed = await dismissTutorialOverlays(currentEditorPage);
+      if (dismissed) console.log(`已处理 ${dismissed} 步页面教程/引导遮罩。`);
+
       const newChapterClicked = await clickByTexts(currentEditorPage, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 2500 });
       if (!newChapterClicked) console.log("未找到“新建章节”按钮，将尝试在当前页面直接填写。");
       await wait(600);
+      await dismissTutorialOverlays(currentEditorPage);
 
       const numberOk = await fillChapterNumber(currentEditorPage, chapter.chapterNoText);
       if (!numberOk) console.log(`未找到独立章节序号输入框，将只填写章节名：${chapter.title}`);
@@ -863,6 +896,7 @@ async function main() {
         console.log("当前章已保存，正在关闭当前编辑页并打开新的章节编辑页...");
         const nextPage = await openFreshChapterPage(browser, currentEditorPage, newChapterUrl);
         await wait(1200);
+        await dismissTutorialOverlays(nextPage);
         await currentEditorPage.close({ runBeforeUnload: false }).catch(() => {});
         currentEditorPage = await selectEditorPage(browser, nextPage);
       }
