@@ -1,0 +1,8 @@
+node_modules/
+.fanqie-browser-profile/
+.fanqie-runs/
+*.log
+*.png
+*.html
+.DS_Store
+Thumbs.db

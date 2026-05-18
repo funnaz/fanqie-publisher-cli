@@ -1,0 +1,260 @@
+番茄发布助手 CLI 使用手册
+
+一、工具用途
+
+这个工具用于把本地 txt 章节半自动填入番茄作家后台。
+
+它不会保存账号密码，也不调用非公开接口。浏览器打开后，需要你自己登录番茄作家后台，并进入作品的章节页面。
+
+当前已测试跑通的能力：
+1. 自动扫描浏览器标签页，找到真正的章节编辑页。
+2. 自动填写左侧章节号。
+3. 自动填写右侧章节名。
+4. 自动填写正文到编辑器。
+5. 自动删除正文第一行的“第x章 章节名”。
+6. 自动保存草稿。
+7. 保存后切换到新的章节编辑页，避免覆盖上一章。
+8. 支持断点续传、失败截图、页面诊断。
+
+
+二、目录要求
+
+默认章节目录：
+C:\Users\92003\Documents\写小说\苍生印_重写版\chapters
+
+推荐章节文件格式：
+001-第1章 南槐县的空名册.txt
+002-第2章 县令夜审.txt
+
+文件正文第一行推荐写：
+第1章 南槐县的空名册
+
+后面空一行，再写正文。
+
+脚本会自动把第一行拆成：
+章节号：1
+章节名：南槐县的空名册
+正文：删除第一行，只上传正文内容
+
+
+三、安装依赖
+
+在目录：
+C:\Users\92003\Documents\写小说
+
+执行：
+npm install
+
+如果已经安装过，不需要重复安装。
+
+
+四、发布前检查
+
+只检查本地章节，不打开浏览器：
+npm run fanqie -- --dry-run --start 1 --end 10
+
+检查内容：
+1. 是否缺章。
+2. 是否重复章节号。
+3. 标题是否为空。
+4. 正文是否为空。
+5. 正文字数是否低于 950 字。
+6. 是否有明显重复段落。
+7. 相邻章节相似度是否过高。
+
+修改最低字数：
+npm run fanqie -- --dry-run --start 1 --end 10 --min-chars 1000
+
+
+五、草稿上传流程
+
+推荐先小范围测试：
+npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+
+操作步骤：
+1. 命令窗口打开后，浏览器会自动打开番茄作家后台。
+2. 你手动登录。
+3. 进入目标作品的章节管理页。
+4. 从章节管理页打开“新建章节”编辑页。
+5. 回到命令窗口按回车。
+6. 脚本会自动填章节号、章节名、正文。
+7. 如果带了 --confirm-each，每章填完会暂停，你检查后按回车保存草稿。
+8. 保存后，脚本会关闭当前编辑页，并尝试打开新的章节编辑页。
+
+已验证可用批次：
+npm run fanqie -- --draft --start 11 --end 20 --confirm-every 5 --reset
+
+
+六、避免覆盖上一章
+
+关键点：保存草稿后，当前页面通常会变成“编辑已有草稿”的页面。如果继续使用这个页面，会覆盖上一章。
+
+脚本现在有两种处理方式。
+
+方式 A：保留章节管理页
+
+这是当前手动测试成功的方式。
+
+要求：
+1. 浏览器里保留一个“章节管理页”标签。
+2. 另一个标签是当前“新建章节”编辑页。
+3. 保存一章后，脚本会尝试回章节管理页点击“新建章节”，再继续下一章。
+
+运行示例：
+npm run fanqie -- --draft --start 21 --end 30 --confirm-every 5 --reset
+
+方式 B：指定真正的新建章节 URL
+
+如果你能拿到番茄后台“新建章节”的固定 URL，用这个方式更稳：
+npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset --new-url "把真正的新建章节URL粘到这里"
+
+注意：
+不要把“保存后的草稿编辑 URL”当作 --new-url，否则仍然会覆盖。
+
+
+七、常用命令
+
+检查前 10 章：
+npm run fanqie -- --dry-run --start 1 --end 10
+
+保存前 3 章草稿，每章确认：
+npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+
+保存 11-20 章草稿，每 5 章暂停：
+npm run fanqie -- --draft --start 11 --end 20 --confirm-every 5 --reset
+
+继续 21-50 章草稿，每 10 章暂停：
+npm run fanqie -- --draft --start 21 --end 50 --confirm-every 10 --reset
+
+指定章节目录：
+npm run fanqie -- --chapters "C:\Users\92003\Documents\写小说\苍生印_重写版\chapters" --start 1 --end 10
+
+正式发布模式：
+npm run fanqie -- --publish --start 1 --end 3 --confirm-each
+
+正式发布前建议先保存草稿并人工检查，不建议直接大批量发布。
+
+
+八、断点续传
+
+脚本会把成功处理过的章节记录到：
+C:\Users\92003\Documents\写小说\.fanqie-runs
+
+同样命令再次运行时，会跳过已完成章节。
+
+从头重跑当前范围：
+npm run fanqie -- --draft --start 1 --end 3 --confirm-each --reset
+
+忽略断点但不删除记录：
+npm run fanqie -- --draft --start 1 --end 3 --confirm-each --no-resume
+
+
+九、页面诊断
+
+如果脚本找不到输入框或编辑器，用诊断模式：
+npm run fanqie -- --draft --start 1 --end 1 --inspect-page --reset
+
+操作：
+1. 浏览器打开后，进入番茄章节编辑页。
+2. 回命令窗口按回车。
+3. 脚本不会填写任何内容，只会导出诊断文件。
+
+诊断文件位置：
+C:\Users\92003\Documents\写小说\.fanqie-runs
+
+诊断会输出：
+1. 脚本看到了几个 input。
+2. 每个 input 的 class、placeholder、value、位置。
+3. 看到了几个编辑器。
+4. 当前页面截图和 HTML。
+
+当前已确认的番茄编辑页结构：
+章节号输入框：
+input.serial-input.byte-input.byte-input-size-default
+
+章节名输入框：
+input.serial-input.serial-editor-input-hint-area.byte-input.byte-input-size-default
+
+正文编辑器：
+.ProseMirror[contenteditable="true"]
+
+
+十、参数说明
+
+--chapters
+章节目录。
+
+--start
+起始章节号。
+
+--end
+结束章节号。
+
+--dry-run
+只做本地检查，不打开浏览器，不上传。
+
+--draft
+保存草稿模式。
+
+--publish
+正式发布模式。
+
+--confirm-each
+每章填完暂停确认。
+
+--confirm-every 5
+每 5 章暂停确认一次。
+
+--reset
+清空当前范围的断点记录，从头执行。
+
+--no-resume
+忽略断点记录，但不删除记录。
+
+--min-chars 950
+设置最低正文字数。
+
+--delay 1200
+每章提交后等待的毫秒数。
+
+--url
+打开的后台入口地址。
+
+--new-url
+真正的新建章节 URL。用于保存后打开下一章新建页，避免覆盖旧草稿。
+
+--inspect-page
+只导出页面诊断，不填写内容。
+
+--no-strict-quality
+忽略质量检查里的警告，但不能忽略错误。
+
+
+十一、推荐使用策略
+
+1. 每次先 dry-run。
+2. 首次只跑 1-3 章，并使用 --confirm-each。
+3. 跑通后按 10 章或 20 章一批。
+4. 大批量上传时使用 --confirm-every 5 或 --confirm-every 10。
+5. 保留章节管理页标签，避免保存后找不到新建入口。
+6. 发布前先全部保存为草稿，再在番茄后台人工检查。
+
+
+十二、常见问题
+
+问题：脚本显示 0 个 input、0 个编辑器。
+原因：脚本没有控制到真正的编辑页，或者当前标签不是编辑页。
+处理：运行 --inspect-page，确认浏览器里打开的是章节编辑页。
+
+问题：保存后下一章覆盖了上一章。
+原因：使用了保存后的草稿编辑 URL。
+处理：保留章节管理页，让脚本点击“新建章节”；或提供真正的新建章节 URL 给 --new-url。
+
+问题：章节标题出现在正文第一行。
+处理：当前脚本会自动删除正文第一行“第x章 标题”。如果页面改版导致失败，运行 --inspect-page 重新定位编辑器。
+
+问题：找不到保存按钮。
+处理：脚本会保存失败截图和 HTML 到 .fanqie-runs。根据截图确认按钮文案是否变了。
+
+问题：不想自动跳过已完成章节。
+处理：加 --reset 或 --no-resume。
