@@ -981,10 +981,56 @@ async function chooseAiYes(page) {
 async function publishDraftChapter(page, chapter) {
   await dismissTutorialOverlays(page);
   const row = await findDraftRowForChapter(page, chapter);
-  if (!row) return { ok: false, reason: "未找到对应草稿行" };
+  if (!row) {
+    const currentResult = await publishCurrentEditorDraft(page, chapter);
+    if (currentResult.ok) return currentResult;
+    return { ok: false, reason: `未找到对应草稿行；当前编辑页发布也未匹配：${currentResult.reason}` };
+  }
   const clicked = await clickPublishInDraftRow(page, row);
   if (!clicked) return { ok: false, reason: "未找到草稿行里的发布按钮" };
   await wait(800);
+  const dialogResult = await confirmPublishDialogs(page);
+  if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
+  await wait(1200);
+  return { ok: true };
+}
+
+async function getCurrentEditorChapterInfo(page) {
+  return page.evaluate(() => {
+    const numberInput = document.querySelector("input.serial-input.byte-input.byte-input-size-default");
+    const titleInput = document.querySelector("input.serial-input.serial-editor-input-hint-area.byte-input.byte-input-size-default, input[placeholder='请输入标题'], input[placeholder*='标题']");
+    const editor = document.querySelector(".ProseMirror[contenteditable='true'], [contenteditable='true'].ProseMirror");
+    return {
+      chapterNo: numberInput?.value || numberInput?.getAttribute("value") || "",
+      title: titleInput?.value || titleInput?.getAttribute("value") || "",
+      hasEditor: Boolean(editor),
+      url: location.href,
+    };
+  }).catch(() => ({ chapterNo: "", title: "", hasEditor: false, url: page.url() }));
+}
+
+async function publishCurrentEditorDraft(page, chapter) {
+  const info = await getCurrentEditorChapterInfo(page);
+  if (!info.hasEditor) return { ok: false, reason: "当前页不是编辑页" };
+
+  const pageNo = String(info.chapterNo || "").trim();
+  const pageTitle = String(info.title || "").trim();
+  const expectedNo = String(chapter.chapterNoText || chapter.no);
+  const noMatches = pageNo === expectedNo || Number(pageNo) === Number(expectedNo);
+  const titleMatches = pageTitle === chapter.title || pageTitle.includes(chapter.title) || chapter.title.includes(pageTitle);
+
+  if (!noMatches || !titleMatches) {
+    return {
+      ok: false,
+      reason: `当前编辑页不匹配。页面章节号="${pageNo}" 标题="${pageTitle}"，目标章节号="${expectedNo}" 标题="${chapter.title}"`,
+    };
+  }
+
+  console.log(`当前已在第 ${chapter.no} 章草稿编辑页，直接进入发布流程。`);
+  const clicked = await clickByTexts(page, ["下一步", "发布", "发表", "提交发布", "立即发布"], { timeout: 3000 });
+  if (!clicked) return { ok: false, reason: "当前编辑页未找到下一步/发布按钮" };
+  await wait(1500);
+
   const dialogResult = await confirmPublishDialogs(page);
   if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
   await wait(1200);
