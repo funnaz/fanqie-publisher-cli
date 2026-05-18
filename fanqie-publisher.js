@@ -825,106 +825,32 @@ async function clickTypoSubmit(page) {
   try {
     if (await modalLocator.count()) {
       await wait(2000);
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const button = modalLocator.locator(".arco-modal-footer button.arco-btn-primary").last();
-        await button.waitFor({ state: "visible", timeout: 3000 });
-        const disabled = await button.evaluate((el) => el.disabled || el.getAttribute("aria-disabled") === "true" || el.className.includes("disabled")).catch(() => false);
-        if (disabled) {
-          await wait(1000);
-          continue;
+      const exactSubmit = modalLocator.locator(".arco-modal-footer button").filter({ hasText: /^提交$/ }).last();
+      if (await exactSubmit.count()) {
+        const disabled = await exactSubmit.evaluate((el) => el.disabled || el.getAttribute("aria-disabled") === "true" || String(el.className).includes("disabled")).catch(() => false);
+        if (!disabled) {
+          console.log("点击错别字提示弹窗中的精确“提交”按钮。");
+          await exactSubmit.click({ timeout: 3000 });
+          await wait(2500);
+          return true;
         }
-        const box = await button.boundingBox();
-        console.log(`第 ${attempt} 次点击错别字提交按钮，等待后点击。`);
-        if (box) await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        else await button.click({ timeout: 2000, force: true });
-        await wait(2500);
-        const stillVisible = await modalLocator.isVisible().catch(() => false);
-        if (!stillVisible) return true;
       }
+      console.log("未找到精确“提交”按钮，暂停等待手动处理。");
+      return false;
     }
   } catch {}
-
-  const submitBox = await page.evaluate(() => {
-    const isVisible = (el) => {
-      const rect = el.getBoundingClientRect();
-      const style = window.getComputedStyle(el);
-      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-    };
-    const modals = Array.from(document.querySelectorAll(".arco-modal"))
-      .filter((modal) => isVisible(modal) && /检测到你还存错别字未修改|是否确定提交/.test(modal.textContent || ""));
-    const modal = modals.at(-1);
-    if (!modal) return null;
-
-    const buttons = Array.from(modal.querySelectorAll("button")).filter(isVisible);
-    const submit = buttons.find((button) => (button.textContent || "").trim() === "提交");
-    const primary = modal.querySelector(".arco-modal-footer button.arco-btn-primary");
-    const target = submit || primary || buttons.at(-1);
-    if (!target) return null;
-    const rect = target.getBoundingClientRect();
-    return {
-      x: rect.left + rect.width / 2,
-      y: rect.top + rect.height / 2,
-      text: (target.textContent || "").trim(),
-      className: target.className,
-    };
-  }).catch(() => null);
-  if (submitBox) {
-    console.log(`点击错别字提示按钮：text="${submitBox.text}" x=${Math.round(submitBox.x)} y=${Math.round(submitBox.y)}`);
-    await page.locator(".arco-modal:has-text('检测到你还存错别字未修改') .arco-modal-footer button.arco-btn-primary").last().click({ timeout: 1000, force: true }).catch(() => {});
-    await page.mouse.click(submitBox.x, submitBox.y);
-    await page.evaluate(() => {
-      const modal = Array.from(document.querySelectorAll(".arco-modal"))
-        .filter((node) => /检测到你还存错别字未修改|是否确定提交/.test(node.textContent || ""))
-        .at(-1);
-      const target = modal?.querySelector(".arco-modal-footer button.arco-btn-primary");
-      if (!target) return false;
-      for (const type of ["pointerdown", "mousedown", "mouseup", "click"]) {
-        target.dispatchEvent(new MouseEvent(type, { bubbles: true, composed: true, cancelable: true, view: window }));
-      }
-      return true;
-    }).catch(() => false);
-    await wait(1200);
-    return true;
-  }
-
-  try {
-    const modal = page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last();
-    if (await modal.count()) {
-      const primary = modal.locator(".arco-modal-footer button.arco-btn-primary").last();
-      if (await primary.count()) {
-        await primary.click({ timeout: 2000, force: true });
-        await wait(1000);
-        return true;
-      }
-    }
-  } catch {}
-
-  const clicked = await page.evaluate(() => {
-    const dialogs = Array.from(document.querySelectorAll(".arco-modal"));
-    const dialog = dialogs.at(-1);
-    if (!dialog) return false;
-    const text = (dialog.textContent || "").replace(/\s+/g, "");
-    if (!text.includes("检测到你还存错别字未修改") && !text.includes("是否确定提交")) return false;
-
-    const primary = dialog.querySelector(".arco-modal-footer button.arco-btn-primary");
-    const exactSubmit = Array.from(dialog.querySelectorAll("button")).find((button) => (button.textContent || "").trim() === "提交");
-    const target = primary || exactSubmit;
-    if (!target) return false;
-
-    target.click();
-    return true;
-  }).catch(() => false);
-  if (clicked) await wait(800);
-  return clicked;
+  return false;
 }
 
 async function confirmPublishDialogs(page) {
   for (let i = 0; i < 8; i++) {
+    const typoModalVisible = await page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last().isVisible().catch(() => false);
     const handledTypo = await clickTypoSubmit(page);
     if (handledTypo) {
       await wait(2000);
       continue;
     }
+    if (typoModalVisible) return { needsManual: true, reason: "错别字提示弹窗未能精确点击提交" };
 
     const handledCheck = await clickDialogButton(page, ["仅基础检测", "基础检测"], 900);
     if (handledCheck) {
@@ -942,6 +868,7 @@ async function confirmPublishDialogs(page) {
 
     break;
   }
+  return { needsManual: false };
 }
 
 async function chooseAiYes(page) {
@@ -973,7 +900,8 @@ async function publishDraftChapter(page, chapter) {
   const clicked = await clickPublishInDraftRow(page, row);
   if (!clicked) return { ok: false, reason: "未找到草稿行里的发布按钮" };
   await wait(800);
-  await confirmPublishDialogs(page);
+  const dialogResult = await confirmPublishDialogs(page);
+  if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
   await wait(1200);
   return { ok: true };
 }
