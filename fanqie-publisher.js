@@ -842,6 +842,50 @@ async function fillBodyAndCleanHeading(page, chapter) {
   return ensureBodyHeadingRemoved(page);
 }
 
+async function verifyDraftContentReady(page, chapter) {
+  return page.evaluate(({ no, title, minBodyLength }) => {
+    const textOf = (node) => (node?.textContent || node?.value || "").trim();
+    const pageText = document.body?.innerText || "";
+    const titleInput = document.querySelector("input.serial-input.serial-editor-input-hint-area")
+      || document.querySelector(".serial-editor-title-right input")
+      || document.querySelector("input[placeholder*='标题']");
+    const numberInput = document.querySelector(".serial-editor-title-left input")
+      || document.querySelector("span.left-input input")
+      || document.querySelector("input.serial-input.byte-input");
+    const editor = document.querySelector(".ProseMirror[contenteditable='true']");
+    const actualTitle = textOf(titleInput);
+    const actualNumber = textOf(numberInput);
+    const bodyText = textOf(editor);
+    return {
+      ok: (!actualTitle || actualTitle.includes(title) || title.includes(actualTitle))
+        && (!actualNumber || actualNumber === String(no))
+        && bodyText.length >= minBodyLength,
+      actualTitle,
+      actualNumber,
+      bodyLength: bodyText.length,
+      hasSavedText: /已保存|保存到云端|已保存到云端/.test(pageText),
+    };
+  }, {
+    no: chapter.no,
+    title: chapter.title,
+    minBodyLength: Math.min(200, Math.max(20, Math.floor(chapter.body.length * 0.2))),
+  }).catch(() => ({ ok: false, actualTitle: "", actualNumber: "", bodyLength: 0, hasSavedText: false }));
+}
+
+async function waitForDraftSaved(page, timeout = 15000) {
+  await wait(3000);
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const saved = await page.evaluate(() => /已保存|保存到云端|已保存到云端/.test(document.body?.innerText || "")).catch(() => false);
+    if (saved) {
+      await wait(2000);
+      return true;
+    }
+    await wait(500);
+  }
+  return false;
+}
+
 async function submitChapter(page, mode) {
   if (mode === "publish") {
     const primary = await page.evaluate(() => {
@@ -1448,6 +1492,14 @@ async function main() {
 
         const submitMode = args.mode === "upload-and-publish" ? "publish" : args.mode;
         await dismissTutorialOverlays(currentEditorPage);
+        if (args.mode === "draft") {
+          const ready = await verifyDraftContentReady(currentEditorPage, chapter);
+          if (!ready.ok) {
+            const reason = `保存前内容校验失败：章节号=${ready.actualNumber || "-"}，标题=${ready.actualTitle || "-"}，正文字数=${ready.bodyLength || 0}`;
+            await saveFailure(currentEditorPage, runId, chapter, reason);
+            throw new Error(reason);
+          }
+        }
         const submitOk = await submitChapter(currentEditorPage, submitMode);
         if (!submitOk) {
           await saveFailure(currentEditorPage, runId, chapter, "未找到保存或发布按钮");
@@ -1469,6 +1521,14 @@ async function main() {
             }
           }
           await wait(args.delay);
+          if (args.mode === "draft") {
+            const saved = await waitForDraftSaved(currentEditorPage);
+            if (!saved) {
+              await saveFailure(currentEditorPage, runId, chapter, "保存草稿后未检测到已保存状态");
+              throw new Error(`第 ${chapter.no} 章保存草稿后未检测到已保存状态，已停止以避免生成空白草稿。`);
+            }
+            console.log(`第 ${chapter.no} 章草稿已确认保存。`);
+          }
         }
       }
 
