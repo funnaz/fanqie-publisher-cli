@@ -41,18 +41,20 @@ function renderSchedules(items = []) {
     schedules.innerHTML = "<p>暂无定时任务</p>";
     return;
   }
-  schedules.innerHTML = items.map((item) => `
+  schedules.innerHTML = items.map((item) => {
+    const modeText = item.mode === "upload-and-publish" ? "上传并发布" : "发布草稿箱";
+    return `
     <div class="schedule-item">
       <div>
         <div class="schedule-main">${escapeHtml(item.name || "定时发布")}</div>
         <div class="schedule-meta">
-          每 ${item.intervalMinutes} 分钟发布 ${item.batchSize} 章，截止第 ${item.maxChapter} 章；
+          ${modeText}；每 ${item.intervalMinutes} 分钟发布 ${item.batchSize} 章，截止第 ${item.maxChapter} 章；
           下次：${item.nextRunAt ? new Date(item.nextRunAt).toLocaleString() : "-"}
         </div>
       </div>
       <button data-delete-schedule="${item.id}" class="danger">删除</button>
     </div>
-  `).join("");
+  `; }).join("");
 }
 
 function escapeHtml(value) {
@@ -131,6 +133,7 @@ $("scheduleBtn").addEventListener("click", async () => {
   try {
     const data = payload();
     data.intervalMinutes = Number($("intervalMinutes").value);
+    data.scheduleMode = $("scheduleMode").value;
     data.batchSize = Number($("batchSize").value || 1);
     data.maxChapter = Number($("maxChapter").value || data.end || 1);
     const created = await post("/api/schedules", data);

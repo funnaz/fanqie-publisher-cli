@@ -111,6 +111,7 @@ function scheduleSummary(schedule) {
     intervalMinutes: schedule.intervalMinutes,
     batchSize: schedule.batchSize,
     maxChapter: schedule.maxChapter,
+    mode: schedule.options?.mode || "publish-drafts",
     enabled: schedule.enabled,
     nextRunAt: schedule.nextRunAt,
     lastRunAt: schedule.lastRunAt || null,
@@ -145,6 +146,8 @@ function createSchedule(options) {
   if (!options.chapters) throw new Error("定时任务需要章节目录。");
   const intervalMinutes = Number(options.intervalMinutes);
   if (![2, 30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 2、30、60、120、240 分钟。");
+  const mode = options.scheduleMode || options.mode || "publish-drafts";
+  if (!["publish-drafts", "upload-and-publish"].includes(mode)) throw new Error("定时模式只能选择“发布草稿箱”或“上传并发布”。");
   const batchSize = Math.max(1, Number(options.batchSize || 1));
   const maxChapter = Math.max(1, Number(options.maxChapter || options.end || 1));
   const schedule = {
@@ -162,9 +165,11 @@ function createSchedule(options) {
     options: {
       chapters: path.resolve(options.chapters),
       book: options.book || "",
-      mode: "publish-drafts",
+      mode,
       confirmEach: false,
       confirmEvery: 0,
+      minChars: Number(options.minChars || 0),
+      newUrl: options.newUrl || "",
       reset: true,
       noStrictQuality: Boolean(options.noStrictQuality),
     },
