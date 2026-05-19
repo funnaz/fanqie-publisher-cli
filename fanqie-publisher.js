@@ -526,12 +526,14 @@ async function clickByTexts(page, texts, options = {}) {
 
 async function dismissTutorialOverlays(page) {
   const clickedLabels = [];
+  if (await clickContinueEditingPrompt(page)) clickedLabels.push("continue-editing");
   for (let i = 0; i < 8; i++) {
     const clicked = await clickByTexts(page, ["跳过", "我知道了", "知道了", "完成", "下一步", "关闭"], { timeout: 800 });
     if (!clicked) break;
     clickedLabels.push("clicked");
     await wait(500);
   }
+  if (await clickContinueEditingPrompt(page)) clickedLabels.push("continue-editing");
 
   await page.keyboard.press("Escape").catch(() => {});
   await page.evaluate(() => {
@@ -551,6 +553,22 @@ async function dismissTutorialOverlays(page) {
     }
   }).catch(() => {});
   return clickedLabels.length;
+}
+
+async function clickContinueEditingPrompt(page) {
+  const modal = page.locator(".arco-modal").filter({ hasText: /刚刚更新的章节|继续编辑|是否继续编辑/ }).last();
+  try {
+    if (!(await modal.count()) || !(await modal.isVisible())) return false;
+    await wait(1000);
+    const button = modal.locator("button").filter({ hasText: /^继续编辑$/ }).last();
+    if (await button.count()) {
+      console.log("检测到“是否继续编辑”提示，已选择继续编辑。");
+      await button.click({ timeout: 3000 });
+      await wait(1200);
+      return true;
+    }
+  } catch {}
+  return false;
 }
 
 async function fillFirstInput(page, includePattern, value, excludePattern) {
@@ -1413,6 +1431,7 @@ async function main() {
         }
 
         const submitMode = args.mode === "upload-and-publish" ? "publish" : args.mode;
+        await dismissTutorialOverlays(currentEditorPage);
         const submitOk = await submitChapter(currentEditorPage, submitMode);
         if (!submitOk) {
           await saveFailure(currentEditorPage, runId, chapter, "未找到保存或发布按钮");
