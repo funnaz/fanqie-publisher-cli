@@ -34,6 +34,7 @@ function parseArgs(argv) {
     dryRun: false,
     strictQuality: true,
     inspect: false,
+    autoStart: false,
     publishDrafts: false,
     uploadAndPublish: false,
   };
@@ -61,6 +62,7 @@ function parseArgs(argv) {
     else if (key === "--draft") args.mode = "draft";
     else if (key === "--no-strict-quality") args.strictQuality = false;
     else if (key === "--inspect-page") args.inspect = true;
+    else if (key === "--auto-start") args.autoStart = true;
     else if (key === "--publish-drafts") args.publishDrafts = true, args.mode = "publish-drafts";
     else if (key === "--headless") args.headless = true;
     else if (key === "--help" || key === "-h") args.help = true;
@@ -97,6 +99,7 @@ function normalizeArgs(args) {
   }
   if (config.confirmEach && !args.confirmEach) merged.confirmEach = true;
   if (config.strictQuality === false) merged.strictQuality = false;
+  if (config.autoStart && !args.autoStart) merged.autoStart = true;
   if (merged.chapters) merged.chapters = path.resolve(merged.chapters);
   if (!merged.book && merged.chapters) {
     const normalized = path.resolve(merged.chapters);
@@ -1308,7 +1311,12 @@ async function main() {
   await page.goto(args.url, { waitUntil: "domcontentloaded" });
 
   const rl = readline.createInterface({ input, output });
-  await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
+  if (args.autoStart) {
+    console.log(`自动运行模式：已打开目标后台 URL：${args.url}`);
+    await wait(2500);
+  } else {
+    await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
+  }
 
   let editorPage = (args.mode === "draft" || args.mode === "upload-and-publish")
     ? await ensureEditorPageForDraft(browser, page)

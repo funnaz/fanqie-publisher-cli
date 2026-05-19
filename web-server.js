@@ -85,6 +85,7 @@ function buildArgs(options) {
   if (options.newUrl) args.push("--new-url", options.newUrl);
   if (options.noStrictQuality) args.push("--no-strict-quality");
   if (options.inspectPage) args.push("--inspect-page");
+  if (options.autoStart) args.push("--auto-start");
   return args;
 }
 
@@ -148,6 +149,8 @@ function createSchedule(options) {
   if (![2, 30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 2、30、60、120、240 分钟。");
   const mode = options.scheduleMode || options.mode || "publish-drafts";
   if (!["publish-drafts", "upload-and-publish"].includes(mode)) throw new Error("定时模式只能选择“发布草稿箱”或“上传并发布”。");
+  const targetUrl = options.url || (mode === "upload-and-publish" ? options.newUrl : "");
+  if (!targetUrl) throw new Error("定时任务需要填写作品后台 URL。发布草稿箱请填章节管理/草稿箱页面，上传并发布请填新建章节页面。");
   const batchSize = Math.max(1, Number(options.batchSize || 1));
   const maxChapter = Math.max(1, Number(options.maxChapter || options.end || 1));
   const schedule = {
@@ -166,11 +169,13 @@ function createSchedule(options) {
       chapters: path.resolve(options.chapters),
       book: options.book || "",
       mode,
+      url: targetUrl,
       confirmEach: false,
       confirmEvery: 0,
       minChars: Number(options.minChars || 0),
       newUrl: options.newUrl || "",
       reset: true,
+      autoStart: true,
       noStrictQuality: Boolean(options.noStrictQuality),
     },
   };

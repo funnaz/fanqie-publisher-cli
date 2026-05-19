@@ -74,6 +74,7 @@ function payload() {
     mode: $("mode").value,
     confirmEvery: Number($("confirmEvery").value || 0),
     minChars: Number($("minChars").value || 0),
+    url: $("targetUrl").value.trim(),
     newUrl: $("newUrl").value.trim(),
     confirmEach: $("confirmEach").checked,
     reset: $("reset").checked,
