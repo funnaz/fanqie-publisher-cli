@@ -413,6 +413,34 @@ async function selectEditorPage(browser, preferredPage) {
   return best;
 }
 
+async function selectChapterManagePage(browser, preferredPage) {
+  const pages = browser.pages();
+  const scored = [];
+  for (const page of pages) {
+    const data = await page.evaluate(() => {
+      const text = document.body?.textContent || "";
+      return {
+        url: location.href,
+        title: document.title,
+        hasChapterManage: text.includes("章节管理"),
+        hasDraftBox: text.includes("草稿箱"),
+        hasNewChapter: text.includes("新建章节"),
+        score: (text.includes("章节管理") ? 30 : 0)
+          + (text.includes("草稿箱") ? 30 : 0)
+          + (text.includes("新建章节") ? 20 : 0)
+          + (location.href.includes("chapter-manage") ? 20 : 0),
+      };
+    }).catch(() => ({ url: page.url(), title: "", score: 0, hasChapterManage: false, hasDraftBox: false, hasNewChapter: false }));
+    scored.push({ page, ...data });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  console.log("章节管理页诊断：");
+  scored.forEach((item, index) => {
+    console.log(`#${index + 1} score=${item.score} manage=${item.hasChapterManage} drafts=${item.hasDraftBox} new=${item.hasNewChapter} url=${item.url}`);
+  });
+  return scored[0]?.score > 0 ? scored[0].page : preferredPage;
+}
+
 async function ensureEditorPageForDraft(browser, preferredPage) {
   let best = await selectEditorPage(browser, preferredPage);
   const score = await pageScore(best);
@@ -1028,12 +1056,9 @@ async function chooseAiYes(page) {
 
 async function publishDraftChapter(page, chapter) {
   await dismissTutorialOverlays(page);
-  await ensureDraftBoxTab(page);
-  const row = await findDraftRowForChapter(page, chapter);
+  const row = await findDraftRowAcrossPages(page, chapter);
   if (!row) {
-    const currentResult = await publishCurrentEditorDraft(page, chapter);
-    if (currentResult.ok) return currentResult;
-    return { ok: false, reason: `未找到对应草稿行；当前编辑页发布也未匹配：${currentResult.reason}` };
+    return { ok: false, reason: "草稿箱翻页查找后仍未找到对应草稿行" };
   }
   const clicked = await clickPublishInDraftRow(page, row);
   if (!clicked) return { ok: false, reason: "未找到草稿行里的发布按钮" };
@@ -1051,23 +1076,53 @@ async function publishDraftChapter(page, chapter) {
 }
 
 async function ensureDraftBoxTab(page) {
-  const hasDraftList = await page.locator("text=/共\\d+篇草稿|草稿箱/").count().catch(() => 0);
   const draftTab = page.locator("text=草稿箱").first();
   try {
     if (await draftTab.count()) {
-      const maybeSelected = await draftTab.evaluate((node) => {
-        const text = node.textContent || "";
-        const cls = node.className || "";
-        const parentCls = node.parentElement?.className || "";
-        return text.includes("草稿箱") && (String(cls).includes("active") || String(parentCls).includes("active"));
-      }).catch(() => false);
-      if (!maybeSelected || hasDraftList === 0) {
-        console.log("切换到草稿箱。");
-        await draftTab.click({ timeout: 2500 });
-        await wait(1500);
-      }
+      console.log("点击确认进入草稿箱。");
+      await draftTab.click({ timeout: 2500 });
+      await wait(1800);
     }
   } catch {}
+}
+
+async function goNextDraftPage(page) {
+  const selectors = [
+    ".arco-pagination-next:not(.arco-pagination-disabled)",
+    "li[aria-label='Next']:not(.arco-pagination-disabled)",
+    "button[aria-label='Next']",
+  ];
+  for (const selector of selectors) {
+    const next = page.locator(selector).last();
+    try {
+      if (await next.count() && await next.isVisible()) {
+        const disabled = await next.evaluate((el) => el.className.includes("disabled") || el.getAttribute("aria-disabled") === "true" || el.disabled).catch(() => false);
+        if (!disabled) {
+          console.log("当前页未找到目标草稿，翻到下一页继续查找。");
+          await next.click({ timeout: 2500 });
+          await wait(1600);
+          return true;
+        }
+      }
+    } catch {}
+  }
+  const clicked = await clickByTexts(page, ["下一页", ">"], { timeout: 1200 });
+  if (clicked) {
+    await wait(1600);
+    return true;
+  }
+  return false;
+}
+
+async function findDraftRowAcrossPages(page, chapter, maxPages = 10) {
+  for (let i = 0; i < maxPages; i++) {
+    await ensureDraftBoxTab(page);
+    const row = await findDraftRowForChapter(page, chapter);
+    if (row) return row;
+    const moved = await goNextDraftPage(page);
+    if (!moved) return null;
+  }
+  return null;
 }
 
 async function getCurrentEditorChapterInfo(page) {
@@ -1190,9 +1245,12 @@ async function main() {
   const rl = readline.createInterface({ input, output });
   await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
 
-  const editorPage = args.mode === "draft"
+  let editorPage = args.mode === "draft"
     ? await ensureEditorPageForDraft(browser, page)
     : await selectEditorPage(browser, page);
+  if (args.mode === "publish-drafts") {
+    editorPage = await selectChapterManagePage(browser, page);
+  }
   if (editorPage !== page) {
     console.log(`已切换到检测到编辑器的标签页：${editorPage.url()}`);
   }
