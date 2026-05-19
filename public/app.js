@@ -4,6 +4,7 @@ const logs = $("logs");
 const progress = $("progress");
 const jobInfo = $("jobInfo");
 const jobState = $("jobState");
+const schedules = $("schedules");
 
 function appendLog(entry) {
   const text = typeof entry === "string" ? entry : `[${entry.time}] ${entry.message}`;
@@ -32,6 +33,26 @@ function renderStatus(status) {
   jobState.className = `state ${status.running ? "running" : "idle"}`;
   jobInfo.textContent = status.job ? JSON.stringify(status.job, null, 2) : "暂无任务";
   renderProgress(status.progress || []);
+  renderSchedules(status.schedules || []);
+}
+
+function renderSchedules(items = []) {
+  if (!items.length) {
+    schedules.innerHTML = "<p>暂无定时任务</p>";
+    return;
+  }
+  schedules.innerHTML = items.map((item) => `
+    <div class="schedule-item">
+      <div>
+        <div class="schedule-main">${escapeHtml(item.name || "定时发布")}</div>
+        <div class="schedule-meta">
+          每 ${item.intervalMinutes} 分钟发布 ${item.batchSize} 章，截止第 ${item.maxChapter} 章；
+          下次：${item.nextRunAt ? new Date(item.nextRunAt).toLocaleString() : "-"}
+        </div>
+      </div>
+      <button data-delete-schedule="${item.id}" class="danger">删除</button>
+    </div>
+  `).join("");
 }
 
 function escapeHtml(value) {
@@ -106,8 +127,39 @@ $("refreshBtn").addEventListener("click", async () => {
   renderStatus(await res.json());
 });
 
+$("scheduleBtn").addEventListener("click", async () => {
+  try {
+    const data = payload();
+    data.intervalMinutes = Number($("intervalMinutes").value);
+    data.batchSize = Number($("batchSize").value || 1);
+    data.maxChapter = Number($("maxChapter").value || data.end || 1);
+    const created = await post("/api/schedules", data);
+    appendLog(`已创建定时任务：${created.name}`);
+    const res = await fetch("/api/status");
+    renderStatus(await res.json());
+  } catch (error) {
+    appendLog(`创建定时任务失败：${error.message}`);
+  }
+});
+
+schedules.addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-schedule]");
+  if (!button) return;
+  const id = button.getAttribute("data-delete-schedule");
+  try {
+    const res = await fetch(`/api/schedules/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "删除失败");
+    appendLog("已删除定时任务。");
+    renderSchedules(data.schedules || []);
+  } catch (error) {
+    appendLog(`删除定时任务失败：${error.message}`);
+  }
+});
+
 const events = new EventSource("/events");
 events.addEventListener("log", (event) => appendLog(JSON.parse(event.data)));
 events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
+events.addEventListener("schedules", (event) => renderSchedules(JSON.parse(event.data)));
 
 fetch("/api/status").then((res) => res.json()).then(renderStatus);

@@ -6,9 +6,12 @@ const { spawn } = require("child_process");
 const ROOT = process.cwd();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const RUNS_DIR = path.join(ROOT, ".fanqie-runs");
+const SCHEDULES_PATH = path.join(ROOT, ".fanqie-schedules.json");
 const PORT = Number(process.env.PORT || 3899);
 
 let currentJob = null;
+let schedules = loadSchedules();
+const scheduleTimers = new Map();
 const clients = new Set();
 const memoryLogs = [];
 
@@ -83,6 +86,141 @@ function buildArgs(options) {
   if (options.noStrictQuality) args.push("--no-strict-quality");
   if (options.inspectPage) args.push("--inspect-page");
   return args;
+}
+
+function loadSchedules() {
+  if (!fs.existsSync(SCHEDULES_PATH)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(SCHEDULES_PATH, "utf8"));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSchedules() {
+  fs.writeFileSync(SCHEDULES_PATH, JSON.stringify(schedules, null, 2), "utf8");
+}
+
+function scheduleSummary(schedule) {
+  return {
+    id: schedule.id,
+    name: schedule.name,
+    chapters: schedule.chapters,
+    book: schedule.book,
+    intervalMinutes: schedule.intervalMinutes,
+    batchSize: schedule.batchSize,
+    maxChapter: schedule.maxChapter,
+    enabled: schedule.enabled,
+    nextRunAt: schedule.nextRunAt,
+    lastRunAt: schedule.lastRunAt || null,
+    createdAt: schedule.createdAt,
+  };
+}
+
+function getPublishedTo(chapters) {
+  const item = summarizeProgress().find((entry) => path.resolve(entry.chapters) === path.resolve(chapters));
+  return item?.publishedTo || 0;
+}
+
+function scheduleNextRun(schedule, from = Date.now()) {
+  schedule.nextRunAt = new Date(from + schedule.intervalMinutes * 60 * 1000).toISOString();
+}
+
+function armSchedule(schedule) {
+  if (scheduleTimers.has(schedule.id)) clearTimeout(scheduleTimers.get(schedule.id));
+  if (!schedule.enabled) return;
+  const delay = Math.max(1000, new Date(schedule.nextRunAt).getTime() - Date.now());
+  const timer = setTimeout(() => runSchedule(schedule.id), delay);
+  scheduleTimers.set(schedule.id, timer);
+}
+
+function armAllSchedules() {
+  for (const timer of scheduleTimers.values()) clearTimeout(timer);
+  scheduleTimers.clear();
+  for (const schedule of schedules) armSchedule(schedule);
+}
+
+function createSchedule(options) {
+  if (!options.chapters) throw new Error("定时任务需要章节目录。");
+  const intervalMinutes = Number(options.intervalMinutes);
+  if (![30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 30、60、120、240 分钟。");
+  const batchSize = Math.max(1, Number(options.batchSize || 1));
+  const maxChapter = Math.max(1, Number(options.maxChapter || options.end || 1));
+  const schedule = {
+    id: Date.now().toString(),
+    name: options.name || `${options.book || path.basename(path.dirname(options.chapters))} 定时发布`,
+    chapters: path.resolve(options.chapters),
+    book: options.book || "",
+    intervalMinutes,
+    batchSize,
+    maxChapter,
+    enabled: true,
+    createdAt: new Date().toISOString(),
+    lastRunAt: null,
+    nextRunAt: "",
+    options: {
+      chapters: path.resolve(options.chapters),
+      book: options.book || "",
+      mode: "publish-drafts",
+      confirmEach: false,
+      confirmEvery: 0,
+      reset: true,
+      noStrictQuality: Boolean(options.noStrictQuality),
+    },
+  };
+  scheduleNextRun(schedule, Date.now());
+  schedules.push(schedule);
+  saveSchedules();
+  armSchedule(schedule);
+  sendEvent("schedules", schedules.map(scheduleSummary));
+  return scheduleSummary(schedule);
+}
+
+function deleteSchedule(id) {
+  const before = schedules.length;
+  schedules = schedules.filter((schedule) => schedule.id !== id);
+  if (scheduleTimers.has(id)) {
+    clearTimeout(scheduleTimers.get(id));
+    scheduleTimers.delete(id);
+  }
+  saveSchedules();
+  sendEvent("schedules", schedules.map(scheduleSummary));
+  return schedules.length !== before;
+}
+
+function runSchedule(id) {
+  const schedule = schedules.find((item) => item.id === id);
+  if (!schedule || !schedule.enabled) return;
+  try {
+    if (currentJob?.process && !currentJob.exited) {
+      appendLog(`定时任务 ${schedule.name} 跳过：当前已有任务运行。`);
+    } else {
+      const publishedTo = getPublishedTo(schedule.chapters);
+      const start = publishedTo + 1;
+      if (start > schedule.maxChapter) {
+        appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动停用。`);
+        schedule.enabled = false;
+      } else {
+        const end = Math.min(schedule.maxChapter, start + schedule.batchSize - 1);
+        appendLog(`定时任务 ${schedule.name} 开始发布第 ${start}-${end} 章。`);
+        startJob({
+          ...schedule.options,
+          start,
+          end,
+          reset: true,
+        });
+        schedule.lastRunAt = new Date().toISOString();
+      }
+    }
+  } catch (error) {
+    appendLog(`定时任务 ${schedule.name} 启动失败：${error.message || error}`);
+  } finally {
+    if (schedule.enabled) scheduleNextRun(schedule, Date.now());
+    saveSchedules();
+    armSchedule(schedule);
+    sendEvent("schedules", schedules.map(scheduleSummary));
+  }
 }
 
 function startJob(options) {
@@ -184,6 +322,7 @@ function getStatus() {
       exitCode: currentJob.exitCode,
     } : null,
     progress: summarizeProgress(),
+    schedules: schedules.map(scheduleSummary),
     logs: memoryLogs.slice(-200),
   };
 }
@@ -214,7 +353,16 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/api/stop" && req.method === "POST") {
       return json(res, 200, { ok: stopJob(), status: getStatus() });
     }
+    if (url.pathname === "/api/schedules" && req.method === "POST") {
+      const body = await readBody(req);
+      return json(res, 200, createSchedule(body));
+    }
+    if (url.pathname === "/api/schedules") return json(res, 200, schedules.map(scheduleSummary));
     if (url.pathname === "/api/progress") return json(res, 200, summarizeProgress());
+    if (url.pathname.startsWith("/api/schedules/") && req.method === "DELETE") {
+      const id = decodeURIComponent(url.pathname.split("/").at(-1));
+      return json(res, 200, { ok: deleteSchedule(id), schedules: schedules.map(scheduleSummary) });
+    }
 
     const requested = url.pathname === "/" ? "/index.html" : url.pathname;
     const filePath = safeFile(path.join(PUBLIC_DIR, requested));
@@ -231,3 +379,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Fanqie Publisher Web UI: http://localhost:${PORT}`);
 });
+
+armAllSchedules();

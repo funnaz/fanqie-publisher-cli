@@ -95,6 +95,36 @@ input, select {
   margin: 14px 0;
 }
 
+.scheduler {
+  display: grid;
+  grid-template-columns: 160px 160px 160px auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.schedule-list {
+  margin-top: 14px;
+}
+
+.schedule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid #f0f0f0;
+}
+
+.schedule-main {
+  font-weight: 700;
+}
+
+.schedule-meta {
+  color: #6b7280;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
 button {
   height: 38px;
   border: 1px solid #d1d5db;
@@ -163,6 +193,9 @@ pre {
 
 @media (max-width: 860px) {
   .grid, .cards {
+    grid-template-columns: 1fr;
+  }
+  .scheduler {
     grid-template-columns: 1fr;
   }
 }
