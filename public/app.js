@@ -6,6 +6,9 @@ const jobInfo = $("jobInfo");
 const jobState = $("jobState");
 const schedules = $("schedules");
 const scheduleHistory = $("scheduleHistory");
+const historyToggle = $("historyToggle");
+const historyPanel = $("historyPanel");
+let historyOpen = false;
 
 function appendLog(entry) {
   const text = typeof entry === "string" ? entry : `[${entry.time}] ${entry.message}`;
@@ -188,6 +191,12 @@ schedules.addEventListener("click", async (event) => {
   } catch (error) {
     appendLog(`删除定时任务失败：${error.message}`);
   }
+});
+
+historyToggle.addEventListener("click", () => {
+  historyOpen = !historyOpen;
+  historyPanel.classList.toggle("hidden", !historyOpen);
+  historyToggle.textContent = historyOpen ? "关闭定时任务历史" : "展开定时任务历史";
 });
 
 const events = new EventSource("/events");

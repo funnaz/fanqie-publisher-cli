@@ -162,6 +162,15 @@ button.danger {
   color: #b91c1c;
 }
 
+button.secondary {
+  color: #1f2937;
+  background: #f9fafb;
+}
+
+button.full-width {
+  width: 100%;
+}
+
 .cards {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -205,6 +214,17 @@ pre {
   color: #d1e7ff;
   border-radius: 6px;
   font-size: 13px;
+}
+
+.hidden {
+  display: none;
+}
+
+.history-panel {
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 8px;
+  margin-top: 12px;
 }
 
 @media (max-width: 860px) {
