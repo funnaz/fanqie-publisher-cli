@@ -9,6 +9,10 @@ const DEFAULT_CHAPTERS_DIR = "";
 const USER_DATA_DIR = path.join(process.cwd(), ".fanqie-browser-profile");
 const RUNS_DIR = path.join(process.cwd(), ".fanqie-runs");
 const DEFAULT_MIN_CHARS = 950;
+const EDGE_PATHS = [
+  "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+  "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+];
 
 function parseArgs(argv) {
   const args = {
@@ -1245,14 +1249,27 @@ function printQualityReport(chapters, issues) {
 }
 
 async function launchBrowser(args) {
-  return chromium.launchPersistentContext(USER_DATA_DIR, {
-    headless: args.headless,
-    channel: "msedge",
-    viewport: { width: 1440, height: 1000 },
-  }).catch(async () => chromium.launchPersistentContext(USER_DATA_DIR, {
+  const edgePath = EDGE_PATHS.find((item) => fs.existsSync(item));
+  const launchOptions = {
     headless: args.headless,
     viewport: { width: 1440, height: 1000 },
-  }));
+  };
+  if (edgePath) {
+    launchOptions.executablePath = edgePath;
+    console.log(`使用系统 Edge 启动浏览器：${edgePath}`);
+  } else {
+    launchOptions.channel = "msedge";
+  }
+  try {
+    return await chromium.launchPersistentContext(USER_DATA_DIR, launchOptions);
+  } catch (error) {
+    if (edgePath) throw error;
+    console.log(`系统 Edge 启动失败，尝试使用 Playwright Chromium：${error.message}`);
+    return chromium.launchPersistentContext(USER_DATA_DIR, {
+      headless: args.headless,
+      viewport: { width: 1440, height: 1000 },
+    });
+  }
 }
 
 async function main() {
