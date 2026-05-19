@@ -144,7 +144,7 @@ function armAllSchedules() {
 function createSchedule(options) {
   if (!options.chapters) throw new Error("定时任务需要章节目录。");
   const intervalMinutes = Number(options.intervalMinutes);
-  if (![30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 30、60、120、240 分钟。");
+  if (![2, 30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 2、30、60、120、240 分钟。");
   const batchSize = Math.max(1, Number(options.batchSize || 1));
   const maxChapter = Math.max(1, Number(options.maxChapter || options.end || 1));
   const schedule = {
