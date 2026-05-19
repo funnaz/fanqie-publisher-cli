@@ -1,0 +1,168 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: #f6f7f9;
+  color: #1f2328;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+}
+
+.app {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+h1, h2, p { margin: 0; }
+h1 { font-size: 28px; }
+h2 { font-size: 16px; margin-bottom: 12px; }
+p { color: #6b7280; margin-top: 6px; }
+
+.state {
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-weight: 600;
+  background: #e5e7eb;
+}
+
+.state.running {
+  color: #8a3b00;
+  background: #fff0d8;
+}
+
+.state.idle {
+  color: #166534;
+  background: #dcfce7;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: 2fr 1fr 120px 120px;
+  gap: 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+input, select {
+  height: 38px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0 10px;
+  font: inherit;
+  color: #111827;
+  background: #fff;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.options label {
+  flex-direction: row;
+  align-items: center;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+button {
+  height: 38px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0 16px;
+  background: #fff;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.primary {
+  border-color: #ff6b1a;
+  background: #ff6b1a;
+  color: #fff;
+}
+
+button.danger {
+  border-color: #ef4444;
+  color: #b91c1c;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.progress-item {
+  border-bottom: 1px solid #f0f0f0;
+  padding: 10px 0;
+}
+
+.progress-item:last-child { border-bottom: 0; }
+
+.progress-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.metrics {
+  display: flex;
+  gap: 10px;
+}
+
+.metric {
+  background: #f3f4f6;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
+.logs {
+  height: 360px;
+  overflow: auto;
+  padding: 12px;
+  background: #0b1220;
+  color: #d1e7ff;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+@media (max-width: 860px) {
+  .grid, .cards {
+    grid-template-columns: 1fr;
+  }
+}
