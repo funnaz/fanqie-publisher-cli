@@ -528,7 +528,7 @@ async function dismissTutorialOverlays(page) {
   const clickedLabels = [];
   if (await clickContinueEditingPrompt(page)) clickedLabels.push("continue-editing");
   for (let i = 0; i < 8; i++) {
-    const clicked = await clickByTexts(page, ["跳过", "我知道了", "知道了", "完成", "下一步", "关闭"], { timeout: 800 });
+    const clicked = await clickByTexts(page, ["跳过", "我知道了", "知道了", "完成", "关闭"], { timeout: 800 });
     if (!clicked) break;
     clickedLabels.push("clicked");
     await wait(500);
@@ -564,6 +564,21 @@ async function clickContinueEditingPrompt(page) {
     if (await button.count()) {
       console.log("检测到“是否继续编辑”提示，已选择继续编辑。");
       await button.click({ timeout: 3000 });
+      await wait(1200);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+async function cancelPublishPromptIfDraft(page) {
+  const modal = page.locator(".arco-modal").filter({ hasText: /发布提示|检测到你还存错别字未修改|是否确定提交/ }).last();
+  try {
+    if (!(await modal.count()) || !(await modal.isVisible())) return false;
+    const cancel = modal.locator("button").filter({ hasText: /^取消$/ }).last();
+    if (await cancel.count()) {
+      console.log("草稿模式检测到发布提示，已取消并返回编辑页。");
+      await cancel.click({ timeout: 3000 });
       await wait(1200);
       return true;
     }
@@ -852,7 +867,8 @@ async function submitChapter(page, mode) {
     }
     return clickByTexts(page, ["下一步", "发布", "发表", "提交发布", "立即发布"], { timeout: 3500 });
   }
-  return clickByTexts(page, ["保存草稿", "存草稿", "保存", "暂存"], { timeout: 3500 });
+  await cancelPublishPromptIfDraft(page);
+  return clickByTexts(page, ["保存草稿", "存草稿", "暂存"], { timeout: 3500 });
 }
 
 async function findDraftRowForChapter(page, chapter) {
