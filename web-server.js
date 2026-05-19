@@ -160,11 +160,11 @@ function summarizeProgress() {
     }
     const completed = Array.isArray(state.completed) ? state.completed : [];
     const max = completed.length ? Math.max(...completed) : 0;
-    if (state.mode === "draft" && max > summary[key].uploadedTo) {
+    if ((state.mode === "draft" || state.mode === "upload-and-publish") && max > summary[key].uploadedTo) {
       summary[key].uploadedTo = max;
       summary[key].latestUploadRun = state;
     }
-    if (state.mode === "publish-drafts" && max > summary[key].publishedTo) {
+    if ((state.mode === "publish-drafts" || state.mode === "upload-and-publish") && max > summary[key].publishedTo) {
       summary[key].publishedTo = max;
       summary[key].latestPublishRun = state;
     }
