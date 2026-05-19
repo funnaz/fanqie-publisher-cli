@@ -479,19 +479,58 @@ async function ensureEditorPageForDraft(browser, preferredPage) {
   return best;
 }
 
+async function isEditorPage(page) {
+  const score = await pageScore(page);
+  return score.editorCount > 0 && score.serialEditor > 0;
+}
+
+async function selectFreshEditorPage(browser, preferredPage, excludedPage, timeout = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const pages = browser.pages().filter((page) => page !== excludedPage && !page.isClosed());
+    const ordered = pages.includes(preferredPage) ? [preferredPage, ...pages.filter((page) => page !== preferredPage)] : pages;
+    let best = null;
+    let bestScore = -1;
+    for (const page of ordered) {
+      const score = await pageScore(page);
+      const value = score.editorCount * 50 + score.serialEditor * 50;
+      if (value > bestScore) {
+        best = page;
+        bestScore = value;
+      }
+      if (score.editorCount > 0 && score.serialEditor > 0) return page;
+    }
+    if (best && bestScore > 0) return best;
+    await wait(500);
+  }
+  return preferredPage;
+}
+
 async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
   if (newChapterUrl) {
     const nextPage = await browser.newPage();
     await nextPage.goto(newChapterUrl, { waitUntil: "domcontentloaded" });
-    return nextPage;
+    await wait(1800);
+    if (await isEditorPage(nextPage)) return nextPage;
+
+    console.log("--new-url 打开后不是章节编辑页，尝试在该页面点击“新建章节”。");
+    const clicked = await clickByTexts(nextPage, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 3500 });
+    if (clicked) {
+      await wait(2000);
+      const editor = await selectFreshEditorPage(browser, nextPage, currentPage);
+      if (await isEditorPage(editor)) return editor;
+    }
+
+    console.log("--new-url 未能进入编辑页，将继续从其他后台页面寻找“新建章节”。");
   }
 
   const managerCandidates = browser.pages().filter((page) => page !== currentPage && !page.isClosed());
   for (const page of managerCandidates) {
     const clicked = await clickByTexts(page, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 1800 });
     if (clicked) {
-      await wait(1200);
-      return selectEditorPage(browser, page);
+      await wait(2000);
+      const editor = await selectFreshEditorPage(browser, page, currentPage);
+      if (await isEditorPage(editor)) return editor;
     }
   }
 
