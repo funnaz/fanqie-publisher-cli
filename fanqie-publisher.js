@@ -31,6 +31,7 @@ function parseArgs(argv) {
     strictQuality: true,
     inspect: false,
     publishDrafts: false,
+    uploadAndPublish: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -52,6 +53,7 @@ function parseArgs(argv) {
     else if (key === "--reset") args.reset = true;
     else if (key === "--dry-run") args.dryRun = true, args.mode = "dry-run";
     else if (key === "--publish") args.mode = "publish";
+    else if (key === "--upload-and-publish") args.uploadAndPublish = true, args.mode = "upload-and-publish";
     else if (key === "--draft") args.mode = "draft";
     else if (key === "--no-strict-quality") args.strictQuality = false;
     else if (key === "--inspect-page") args.inspect = true;
@@ -60,8 +62,8 @@ function parseArgs(argv) {
     else if (key === "--help" || key === "-h") args.help = true;
   }
 
-  if (!["dry-run", "draft", "publish", "publish-drafts"].includes(args.mode)) {
-    throw new Error("--mode 只能是 dry-run、draft、publish 或 publish-drafts");
+  if (!["dry-run", "draft", "publish", "publish-drafts", "upload-and-publish"].includes(args.mode)) {
+    throw new Error("--mode 只能是 dry-run、draft、publish、publish-drafts 或 upload-and-publish");
   }
   return args;
 }
@@ -120,6 +122,7 @@ function printHelp() {
   --dry-run         只做本地检查，不打开浏览器，不填后台
   --draft           保存草稿模式，默认模式
   --publish         正式发布模式
+  --upload-and-publish 填写章节后直接发布
   --publish-drafts  从草稿箱/章节管理页按章节范围发布已存在草稿
   --confirm-each    每章填完后暂停确认
   --confirm-every   每 N 章暂停确认一次
@@ -1258,7 +1261,7 @@ async function main() {
   const pending = chapters.filter((chapter) => !completed.has(chapter.no));
   console.log(`书名/项目：${args.book}`);
   console.log(`章节目录：${args.chapters}`);
-  console.log(`运行模式：${args.mode === "publish-drafts" ? "发布草稿箱章节" : args.mode === "publish" ? "正式发布" : "保存草稿"}`);
+  console.log(`运行模式：${args.mode === "publish-drafts" ? "发布草稿箱章节" : args.mode === "upload-and-publish" ? "填写后直接发布" : args.mode === "publish" ? "正式发布" : "保存草稿"}`);
   console.log(`断点：已完成 ${completed.size} 章，待处理 ${pending.length} 章。记录目录：${RUNS_DIR}`);
   logLine(runId, `开始运行，待处理 ${pending.length} 章，模式 ${args.mode}`);
 
@@ -1269,7 +1272,7 @@ async function main() {
   const rl = readline.createInterface({ input, output });
   await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
 
-  let editorPage = args.mode === "draft"
+  let editorPage = (args.mode === "draft" || args.mode === "upload-and-publish")
     ? await ensureEditorPageForDraft(browser, page)
     : await selectEditorPage(browser, page);
   if (args.mode === "publish-drafts") {
@@ -1353,15 +1356,23 @@ async function main() {
         await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
       } else {
         if (args.confirmEach) {
-          await rl.question(`第 ${chapter.no} 章已填写。检查页面后按回车${args.mode === "publish" ? "发布" : "保存草稿"}...`);
+          await rl.question(`第 ${chapter.no} 章已填写。检查页面后按回车${args.mode === "publish" || args.mode === "upload-and-publish" ? "发布" : "保存草稿"}...`);
         }
 
-        const submitOk = await submitChapter(currentEditorPage, args.mode);
+        const submitMode = args.mode === "upload-and-publish" ? "publish" : args.mode;
+        const submitOk = await submitChapter(currentEditorPage, submitMode);
         if (!submitOk) {
           await saveFailure(currentEditorPage, runId, chapter, "未找到保存或发布按钮");
           console.log(`第 ${chapter.no} 章已填写，但未找到保存/发布按钮。请手动点击。`);
           await rl.question("手动点击完成后按回车继续，或按 Ctrl+C 停止...");
         } else {
+          if (args.mode === "upload-and-publish") {
+            const dialogResult = await confirmPublishDialogs(currentEditorPage);
+            if (dialogResult?.needsManual) {
+              console.log(`发布弹窗需要手动处理：${dialogResult.reason}`);
+              await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
+            }
+          }
           await wait(args.delay);
         }
       }

@@ -196,6 +196,13 @@ npm run fanqie -- --chapters "D:\novels\某本书\chapters" --publish --start 1 
 
 正式发布前建议先保存草稿并人工检查，不建议直接大批量发布。
 
+直接发布（先上传再发布）：
+npm run fanqie -- --chapters "D:\novels\某本书\chapters" --upload-and-publish --start 1 --end 3 --confirm-each --reset
+
+说明：
+--upload-and-publish 会先执行上传流程，填写章节号、章节名和正文，然后点击发布，并处理后续弹窗。
+--publish 只适合当前页面已经填好内容时使用，不会自动上传正文。
+
 从草稿箱发布已保存草稿：
 npm run fanqie -- --chapters "D:\novels\某本书\chapters" --publish-drafts --start 1 --end 3 --confirm-each --reset
 
@@ -289,6 +296,9 @@ JSON 配置文件路径。
 
 --publish
 正式发布模式。
+
+--upload-and-publish
+先上传章节内容，再直接发布。
 
 --publish-drafts
 从草稿箱或章节管理页按章节范围发布已保存草稿。

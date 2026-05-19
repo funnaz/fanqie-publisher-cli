@@ -58,6 +58,7 @@ function contentType(filePath) {
 
 function normalizeMode(mode) {
   if (mode === "publish-drafts") return "--publish-drafts";
+  if (mode === "upload-and-publish") return "--upload-and-publish";
   if (mode === "publish") return "--publish";
   if (mode === "dry-run") return "--dry-run";
   return "--draft";
