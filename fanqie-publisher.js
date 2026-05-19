@@ -1087,6 +1087,30 @@ async function ensureDraftBoxTab(page) {
 }
 
 async function goNextDraftPage(page) {
+  const clickedArrow = await page.evaluate(() => {
+    const isVisible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+    };
+    const arrows = Array.from(document.querySelectorAll("svg.arco-icon-right, .arco-icon-right"))
+      .filter(isVisible);
+    for (const arrow of arrows) {
+      const clickable = arrow.closest("button, li, .arco-pagination-item, .arco-pagination-next, span, div");
+      if (!clickable || !isVisible(clickable)) continue;
+      const className = String(clickable.className || "");
+      if (className.includes("disabled") || clickable.getAttribute("aria-disabled") === "true") continue;
+      clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      return true;
+    }
+    return false;
+  }).catch(() => false);
+  if (clickedArrow) {
+    console.log("点击草稿箱分页右箭头。");
+    await wait(1800);
+    return true;
+  }
+
   const selectors = [
     ".arco-pagination-next:not(.arco-pagination-disabled)",
     "li[aria-label='Next']:not(.arco-pagination-disabled)",
