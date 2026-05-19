@@ -804,7 +804,28 @@ async function fillBodyAndCleanHeading(page, chapter) {
 
 async function submitChapter(page, mode) {
   if (mode === "publish") {
-    return clickByTexts(page, ["发布", "发表", "提交发布", "立即发布"], { timeout: 3500 });
+    const primary = await page.evaluate(() => {
+      const isVisible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = window.getComputedStyle(el);
+        return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+      };
+      const buttons = Array.from(document.querySelectorAll("button, .arco-btn, div, span"))
+        .filter((node) => isVisible(node));
+      const target = buttons.find((node) => {
+        const text = (node.textContent || "").trim();
+        const cls = String(node.className || "");
+        return /下一步|发布|发表|提交发布|立即发布/.test(text) && (cls.includes("primary") || cls.includes("arco-btn") || node.tagName === "BUTTON");
+      });
+      if (!target) return false;
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+      return true;
+    }).catch(() => false);
+    if (primary) {
+      await wait(1500);
+      return true;
+    }
+    return clickByTexts(page, ["下一步", "发布", "发表", "提交发布", "立即发布"], { timeout: 3500 });
   }
   return clickByTexts(page, ["保存草稿", "存草稿", "保存", "暂存"], { timeout: 3500 });
 }
@@ -1365,6 +1386,13 @@ async function main() {
           await saveFailure(currentEditorPage, runId, chapter, "未找到保存或发布按钮");
           console.log(`第 ${chapter.no} 章已填写，但未找到保存/发布按钮。请手动点击。`);
           await rl.question("手动点击完成后按回车继续，或按 Ctrl+C 停止...");
+          if (args.mode === "upload-and-publish") {
+            const dialogResult = await confirmPublishDialogs(currentEditorPage);
+            if (dialogResult?.needsManual) {
+              console.log(`发布弹窗需要手动处理：${dialogResult.reason}`);
+              await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
+            }
+          }
         } else {
           if (args.mode === "upload-and-publish") {
             const dialogResult = await confirmPublishDialogs(currentEditorPage);
