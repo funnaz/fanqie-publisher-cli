@@ -1275,6 +1275,11 @@ async function launchBrowser(args) {
   }
 }
 
+async function closeBrowserContext(browser) {
+  if (!browser) return;
+  await browser.close().catch(() => {});
+}
+
 async function main() {
   const args = normalizeArgs(parseArgs(process.argv));
   if (args.help) return printHelp();
@@ -1335,6 +1340,7 @@ async function main() {
   if (args.inspect) {
     await inspectPage(editorPage, runId);
     rl.close();
+    await closeBrowserContext(browser);
     console.log("诊断完成，没有填写任何内容。");
     return;
   }
@@ -1371,6 +1377,7 @@ async function main() {
     rl.close();
     logLine(runId, "草稿发布模式运行完成");
     console.log("草稿发布处理完成。");
+    await closeBrowserContext(browser);
     return;
   }
 
@@ -1458,7 +1465,8 @@ async function main() {
 
   rl.close();
   logLine(runId, "运行完成");
-  console.log("处理完成。浏览器保持打开，方便你检查后台结果。");
+  await closeBrowserContext(browser);
+  console.log("处理完成。浏览器已自动关闭。");
 }
 
 main().catch((error) => {
