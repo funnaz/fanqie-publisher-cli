@@ -5,6 +5,7 @@ const progress = $("progress");
 const jobInfo = $("jobInfo");
 const jobState = $("jobState");
 const schedules = $("schedules");
+const scheduleHistory = $("scheduleHistory");
 
 function appendLog(entry) {
   const text = typeof entry === "string" ? entry : `[${entry.time}] ${entry.message}`;
@@ -34,6 +35,7 @@ function renderStatus(status) {
   jobInfo.textContent = status.job ? JSON.stringify(status.job, null, 2) : "暂无任务";
   renderProgress(status.progress || []);
   renderSchedules(status.schedules || []);
+  renderScheduleHistory(status.scheduleHistory || []);
 }
 
 function renderSchedules(items = []) {
@@ -55,6 +57,33 @@ function renderSchedules(items = []) {
       <button data-delete-schedule="${item.id}" class="danger">删除</button>
     </div>
   `; }).join("");
+}
+
+function renderScheduleHistory(items = []) {
+  if (!items.length) {
+    scheduleHistory.innerHTML = "<p>暂无定时任务历史</p>";
+    return;
+  }
+  scheduleHistory.innerHTML = items.slice(0, 20).map((item) => {
+    const modeText = item.mode === "upload-and-publish" ? "上传并发布" : "发布草稿箱";
+    const range = item.start ? `第 ${item.start}-${item.end} 章；` : "";
+    const statusText = {
+      started: "开始",
+      finished: "结束",
+      failed: "失败",
+      completed: "完成",
+    }[item.status] || item.status || "-";
+    return `
+      <div class="history-item">
+        <div>
+          <div class="schedule-main">${escapeHtml(item.name || "定时发布")} <span class="tag">${escapeHtml(statusText)}</span></div>
+          <div class="schedule-meta">
+            ${new Date(item.time).toLocaleString()}；${modeText}；${range}${escapeHtml(item.message || "")}
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
 }
 
 function escapeHtml(value) {
@@ -165,5 +194,6 @@ const events = new EventSource("/events");
 events.addEventListener("log", (event) => appendLog(JSON.parse(event.data)));
 events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
 events.addEventListener("schedules", (event) => renderSchedules(JSON.parse(event.data)));
+events.addEventListener("schedule-history", (event) => renderScheduleHistory(JSON.parse(event.data)));
 
 fetch("/api/status").then((res) => res.json()).then(renderStatus);

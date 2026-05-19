@@ -106,13 +106,18 @@ input, select {
   margin-top: 14px;
 }
 
-.schedule-item {
+.schedule-item,
+.history-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 10px 0;
   border-top: 1px solid #f0f0f0;
+}
+
+.history-list {
+  margin-top: 4px;
 }
 
 .schedule-main {
@@ -123,6 +128,17 @@ input, select {
   color: #6b7280;
   font-size: 13px;
   margin-top: 4px;
+}
+
+.tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #374151;
+  background: #f3f4f6;
+  font-size: 12px;
+  font-weight: 500;
 }
 
 button {

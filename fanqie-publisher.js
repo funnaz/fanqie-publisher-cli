@@ -1381,6 +1381,7 @@ async function main() {
 
   const runId = makeRunId(args);
   const state = loadState(runId, args);
+  saveState(runId, state);
   const completed = new Set(state.completed);
   const pending = chapters.filter((chapter) => !completed.has(chapter.no));
   console.log(`书名/项目：${args.book}`);
@@ -1435,6 +1436,8 @@ async function main() {
           await saveFailure(editorPage, runId, chapter, result.reason);
           console.log(`第 ${chapter.no} 章未能自动发布：${result.reason}`);
           await rl.question("请手动处理该章，完成后按回车继续，或按 Ctrl+C 停止...");
+        } else {
+          console.log(`第 ${chapter.no} 章草稿发布已确认完成。`);
         }
         state.completed.push(chapter.no);
         saveState(runId, state);

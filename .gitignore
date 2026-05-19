@@ -2,6 +2,7 @@ node_modules/
 .fanqie-browser-profile/
 .fanqie-runs/
 .fanqie-schedules.json
+.fanqie-schedule-history.json
 *.log
 *.png
 *.html

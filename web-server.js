@@ -7,10 +7,12 @@ const ROOT = process.cwd();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const RUNS_DIR = path.join(ROOT, ".fanqie-runs");
 const SCHEDULES_PATH = path.join(ROOT, ".fanqie-schedules.json");
+const SCHEDULE_HISTORY_PATH = path.join(ROOT, ".fanqie-schedule-history.json");
 const PORT = Number(process.env.PORT || 3899);
 
 let currentJob = null;
 let schedules = loadSchedules();
+let scheduleHistory = loadScheduleHistory();
 const scheduleTimers = new Map();
 const clients = new Set();
 const memoryLogs = [];
@@ -101,6 +103,30 @@ function loadSchedules() {
 
 function saveSchedules() {
   fs.writeFileSync(SCHEDULES_PATH, JSON.stringify(schedules, null, 2), "utf8");
+}
+
+function loadScheduleHistory() {
+  if (!fs.existsSync(SCHEDULE_HISTORY_PATH)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(SCHEDULE_HISTORY_PATH, "utf8"));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveScheduleHistory() {
+  fs.writeFileSync(SCHEDULE_HISTORY_PATH, JSON.stringify(scheduleHistory.slice(0, 100), null, 2), "utf8");
+}
+
+function addScheduleHistory(entry) {
+  scheduleHistory.unshift({
+    time: new Date().toISOString(),
+    ...entry,
+  });
+  scheduleHistory = scheduleHistory.slice(0, 100);
+  saveScheduleHistory();
+  sendEvent("schedule-history", scheduleHistory);
 }
 
 function scheduleSummary(schedule) {
@@ -199,6 +225,16 @@ function deleteSchedule(id) {
   return schedules.length !== before;
 }
 
+function removeSchedule(id) {
+  schedules = schedules.filter((schedule) => schedule.id !== id);
+  if (scheduleTimers.has(id)) {
+    clearTimeout(scheduleTimers.get(id));
+    scheduleTimers.delete(id);
+  }
+  saveSchedules();
+  sendEvent("schedules", schedules.map(scheduleSummary));
+}
+
 function runSchedule(id) {
   const schedule = schedules.find((item) => item.id === id);
   if (!schedule || !schedule.enabled) return;
@@ -209,13 +245,40 @@ function runSchedule(id) {
       const publishedTo = getPublishedTo(schedule.chapters);
       const start = publishedTo + 1;
       if (start > schedule.maxChapter) {
-        appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动停用。`);
+        appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动删除。`);
+        addScheduleHistory({
+          name: schedule.name,
+          chapters: schedule.chapters,
+          book: schedule.book,
+          mode: schedule.options?.mode || "publish-drafts",
+          status: "completed",
+          message: `已到截止章节 ${schedule.maxChapter}，自动删除`,
+          maxChapter: schedule.maxChapter,
+          publishedTo,
+        });
         schedule.enabled = false;
+        removeSchedule(schedule.id);
+        return;
       } else {
         const end = Math.min(schedule.maxChapter, start + schedule.batchSize - 1);
         appendLog(`定时任务 ${schedule.name} 开始发布第 ${start}-${end} 章。`);
+        addScheduleHistory({
+          scheduleId: schedule.id,
+          name: schedule.name,
+          chapters: schedule.chapters,
+          book: schedule.book,
+          mode: schedule.options?.mode || "publish-drafts",
+          status: "started",
+          message: `开始处理第 ${start}-${end} 章`,
+          start,
+          end,
+          maxChapter: schedule.maxChapter,
+        });
         startJob({
           ...schedule.options,
+          scheduleId: schedule.id,
+          scheduleName: schedule.name,
+          scheduleMaxChapter: schedule.maxChapter,
           start,
           end,
           reset: true,
@@ -226,9 +289,9 @@ function runSchedule(id) {
   } catch (error) {
     appendLog(`定时任务 ${schedule.name} 启动失败：${error.message || error}`);
   } finally {
-    if (schedule.enabled) scheduleNextRun(schedule, Date.now());
+    if (schedule.enabled && schedules.some((item) => item.id === schedule.id)) scheduleNextRun(schedule, Date.now());
     saveSchedules();
-    armSchedule(schedule);
+    if (schedules.some((item) => item.id === schedule.id)) armSchedule(schedule);
     sendEvent("schedules", schedules.map(scheduleSummary));
   }
 }
@@ -247,6 +310,9 @@ function startJob(options) {
     id: Date.now().toString(),
     args,
     options,
+    scheduleId: options.scheduleId || null,
+    scheduleName: options.scheduleName || "",
+    scheduleMaxChapter: options.scheduleMaxChapter || null,
     process: child,
     startedAt: new Date().toISOString(),
     exited: false,
@@ -259,9 +325,47 @@ function startJob(options) {
     currentJob.exited = true;
     currentJob.exitCode = code;
     appendLog(`任务结束，退出码：${code}`);
+    finalizeScheduledJob(currentJob, code);
     sendEvent("status", getStatus());
+    setTimeout(() => sendEvent("status", getStatus()), 1000);
   });
   sendEvent("status", getStatus());
+}
+
+function finalizeScheduledJob(job, code) {
+  if (!job?.scheduleId) return;
+  const schedule = schedules.find((item) => item.id === job.scheduleId);
+  const progress = summarizeProgress().find((entry) => path.resolve(entry.chapters) === path.resolve(job.options.chapters));
+  const publishedTo = progress?.publishedTo || 0;
+  addScheduleHistory({
+    scheduleId: job.scheduleId,
+    name: job.scheduleName || schedule?.name || "定时发布",
+    chapters: job.options.chapters,
+    book: job.options.book || schedule?.book || "",
+    mode: job.options.mode || schedule?.options?.mode || "publish-drafts",
+    status: code === 0 ? "finished" : "failed",
+    message: code === 0 ? `任务结束，当前已发布到第 ${publishedTo} 章` : `任务失败，退出码 ${code}`,
+    start: job.options.start,
+    end: job.options.end,
+    maxChapter: job.scheduleMaxChapter || schedule?.maxChapter || null,
+    publishedTo,
+    exitCode: code,
+  });
+  if (schedule && code === 0 && publishedTo >= schedule.maxChapter) {
+    appendLog(`定时任务 ${schedule.name} 已完成截止章节 ${schedule.maxChapter}，自动删除。`);
+    addScheduleHistory({
+      scheduleId: schedule.id,
+      name: schedule.name,
+      chapters: schedule.chapters,
+      book: schedule.book,
+      mode: schedule.options?.mode || "publish-drafts",
+      status: "completed",
+      message: `已完成截止章节 ${schedule.maxChapter}，自动删除`,
+      maxChapter: schedule.maxChapter,
+      publishedTo,
+    });
+    removeSchedule(schedule.id);
+  }
 }
 
 function sendContinue() {
@@ -333,6 +437,7 @@ function getStatus() {
     } : null,
     progress: summarizeProgress(),
     schedules: schedules.map(scheduleSummary),
+    scheduleHistory,
     logs: memoryLogs.slice(-200),
   };
 }
@@ -348,6 +453,7 @@ const server = http.createServer(async (req, res) => {
       });
       clients.add(res);
       res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
+      res.write(`event: schedule-history\ndata: ${JSON.stringify(scheduleHistory)}\n\n`);
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -368,6 +474,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, createSchedule(body));
     }
     if (url.pathname === "/api/schedules") return json(res, 200, schedules.map(scheduleSummary));
+    if (url.pathname === "/api/schedule-history") return json(res, 200, scheduleHistory);
     if (url.pathname === "/api/progress") return json(res, 200, summarizeProgress());
     if (url.pathname.startsWith("/api/schedules/") && req.method === "DELETE") {
       const id = decodeURIComponent(url.pathname.split("/").at(-1));
