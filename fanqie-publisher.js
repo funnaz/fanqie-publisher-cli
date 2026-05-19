@@ -413,6 +413,34 @@ async function selectEditorPage(browser, preferredPage) {
   return best;
 }
 
+async function ensureEditorPageForDraft(browser, preferredPage) {
+  let best = await selectEditorPage(browser, preferredPage);
+  const score = await pageScore(best);
+  if (score.editorCount > 0 && score.serialEditor > 0) return best;
+
+  console.log("当前还不是章节写入页，尝试点击“新建章节”进入写入页。");
+  const clicked = await clickByTexts(best, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 3000 });
+  if (clicked) {
+    await wait(1800);
+    best = await selectEditorPage(browser, best);
+    const nextScore = await pageScore(best);
+    if (nextScore.editorCount > 0 || nextScore.serialEditor > 0) return best;
+  }
+
+  for (const page of browser.pages()) {
+    if (page === best) continue;
+    const clickedOther = await clickByTexts(page, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 1500 });
+    if (clickedOther) {
+      await wait(1800);
+      const candidate = await selectEditorPage(browser, page);
+      const candidateScore = await pageScore(candidate);
+      if (candidateScore.editorCount > 0 || candidateScore.serialEditor > 0) return candidate;
+    }
+  }
+
+  return best;
+}
+
 async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
   if (newChapterUrl) {
     const nextPage = await browser.newPage();
@@ -1162,7 +1190,9 @@ async function main() {
   const rl = readline.createInterface({ input, output });
   await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
 
-  const editorPage = await selectEditorPage(browser, page);
+  const editorPage = args.mode === "draft"
+    ? await ensureEditorPageForDraft(browser, page)
+    : await selectEditorPage(browser, page);
   if (editorPage !== page) {
     console.log(`已切换到检测到编辑器的标签页：${editorPage.url()}`);
   }
