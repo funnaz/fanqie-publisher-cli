@@ -3,6 +3,9 @@ node_modules/
 .fanqie-runs/
 .fanqie-schedules.json
 .fanqie-schedule-history.json
+.fanqie-projects.json
+.studio-ai-config.json
+.studio-runs/
 *.log
 *.png
 *.html

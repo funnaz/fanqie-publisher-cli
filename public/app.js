@@ -8,7 +8,16 @@ const schedules = $("schedules");
 const scheduleHistory = $("scheduleHistory");
 const historyToggle = $("historyToggle");
 const historyPanel = $("historyPanel");
+const failureModal = $("failureModal");
+const failureMessage = $("failureMessage");
+const failureClose = $("failureClose");
+const failureOk = $("failureOk");
+const projectSelect = $("projectSelect");
+const preflightResult = $("preflightResult");
+const urlTestResult = $("urlTestResult");
 let historyOpen = false;
+let lastFailureJobId = "";
+let projectItems = [];
 
 function appendLog(entry) {
   const text = typeof entry === "string" ? entry : `[${entry.time}] ${entry.message}`;
@@ -33,12 +42,52 @@ function renderProgress(items = []) {
 }
 
 function renderStatus(status) {
-  jobState.textContent = status.running ? "运行中" : "空闲";
-  jobState.className = `state ${status.running ? "running" : "idle"}`;
+  const paused = Boolean(status.running && status.job?.pausedForManualReview);
+  jobState.textContent = paused ? "待人工处理" : (status.running ? "运行中" : "空闲");
+  jobState.className = `state ${paused ? "paused" : (status.running ? "running" : "idle")}`;
   jobInfo.textContent = status.job ? JSON.stringify(status.job, null, 2) : "暂无任务";
   renderProgress(status.progress || []);
   renderSchedules(status.schedules || []);
   renderScheduleHistory(status.scheduleHistory || []);
+  renderProjects(status.projects || []);
+  maybeShowFailure(status);
+}
+
+function renderProjects(items = []) {
+  projectItems = items;
+  const current = projectSelect.value;
+  projectSelect.innerHTML = `<option value="">不使用档案</option>` + items.map((item) => `
+    <option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.book || "未命名作品")}</option>
+  `).join("");
+  if (items.some((item) => item.id === current)) projectSelect.value = current;
+}
+
+function applyProject(project) {
+  if (!project) return;
+  $("chapters").value = project.chapters || "";
+  $("book").value = project.book || project.name || "";
+  $("mode").value = project.mode || "upload-and-publish";
+  $("minChars").value = project.minChars || 1000;
+  $("targetUrl").value = project.url || "";
+  $("newUrl").value = project.newUrl || "";
+}
+
+function showFailure(message) {
+  failureMessage.textContent = message || "任务失败，已暂停。";
+  failureModal.classList.remove("hidden");
+}
+
+function hideFailure() {
+  failureModal.classList.add("hidden");
+}
+
+function maybeShowFailure(status) {
+  const job = status.job;
+  if (!job || !job.exited || Number(job.exitCode) === 0) return;
+  if (lastFailureJobId === job.id) return;
+  lastFailureJobId = job.id;
+  const reason = job.failureReason || `退出码 ${job.exitCode}`;
+  showFailure(`任务失败，已暂停。原因：${reason}`);
 }
 
 function renderSchedules(items = []) {
@@ -130,13 +179,88 @@ async function post(url, body = {}) {
   return json;
 }
 
+function renderPreflight(data) {
+  const errors = data.errors || [];
+  const warnings = data.warnings || [];
+  const rows = [
+    `<div class="${data.ok ? "ok" : "error"}">${data.ok ? "预检通过" : "预检未通过"}：第 ${data.start}-${data.end} 章，扫描 ${data.scanned || 0} 章。</div>`,
+    ...errors.map((item) => `<div class="error">错误：${escapeHtml(item)}</div>`),
+    ...warnings.map((item) => `<div class="warn">提醒：${escapeHtml(item)}</div>`),
+  ];
+  preflightResult.innerHTML = rows.join("");
+}
+
+function renderUrlTest(data) {
+  const errors = data.errors || [];
+  const warnings = data.warnings || [];
+  const rows = [
+    `<div class="${data.ok ? "ok" : "error"}">${data.ok ? "后台 URL 可用" : "后台 URL 不可用"}：${escapeHtml(data.backendBook ? `《${data.backendBook}》` : data.url || "")}</div>`,
+    `<div>检测结果：${data.hasBook ? "书名匹配" : "书名未匹配"}；${data.hasChapterManage ? "章节管理可见" : "章节管理未识别"}；新建章节入口 ${data.hasNewChapter ? "可见" : "未识别"}。</div>`,
+    ...errors.map((item) => `<div class="error">错误：${escapeHtml(item)}</div>`),
+    ...warnings.map((item) => `<div class="warn">提醒：${escapeHtml(item)}</div>`),
+  ];
+  urlTestResult.innerHTML = rows.join("");
+}
+
+async function runPreflight() {
+  const data = await post("/api/preflight", payload());
+  renderPreflight(data);
+  if (!data.ok) throw new Error(data.errors.join("；"));
+  return data;
+}
+
 $("startBtn").addEventListener("click", async () => {
   try {
+    hideFailure();
+    await runPreflight();
     const data = await post("/api/start", payload());
     renderStatus(data);
   } catch (error) {
     appendLog(`启动失败：${error.message}`);
+    showFailure(`启动失败：${error.message}`);
   }
+});
+
+$("preflightBtn").addEventListener("click", async () => {
+  try {
+    await runPreflight();
+  } catch (error) {
+    appendLog(`发布前预检失败：${error.message}`);
+  }
+});
+
+$("testUrlBtn").addEventListener("click", async () => {
+  try {
+    urlTestResult.textContent = "正在测试后台 URL...";
+    const data = await post("/api/test-backend-url", {
+      url: $("targetUrl").value.trim(),
+      book: $("book").value.trim(),
+    });
+    renderUrlTest(data);
+    if (!data.ok) throw new Error(data.errors.join("；"));
+  } catch (error) {
+    appendLog(`后台 URL 测试失败：${error.message}`);
+  }
+});
+
+$("saveProjectBtn").addEventListener("click", async () => {
+  try {
+    const data = await post("/api/projects", {
+      name: $("book").value.trim(),
+      ...payload(),
+    });
+    renderProjects(data.projects || []);
+    projectSelect.value = data.project?.id || "";
+    appendLog(`已保存项目档案：${data.project?.name || data.project?.book || "未命名作品"}`);
+  } catch (error) {
+    appendLog(`保存项目档案失败：${error.message}`);
+    showFailure(`保存项目档案失败：${error.message}`);
+  }
+});
+
+projectSelect.addEventListener("change", () => {
+  const project = projectItems.find((item) => item.id === projectSelect.value);
+  applyProject(project);
 });
 
 $("continueBtn").addEventListener("click", async () => {
@@ -199,10 +323,17 @@ historyToggle.addEventListener("click", () => {
   historyToggle.textContent = historyOpen ? "关闭定时任务历史" : "展开定时任务历史";
 });
 
+failureClose.addEventListener("click", hideFailure);
+failureOk.addEventListener("click", hideFailure);
+failureModal.addEventListener("click", (event) => {
+  if (event.target === failureModal) hideFailure();
+});
+
 const events = new EventSource("/events");
 events.addEventListener("log", (event) => appendLog(JSON.parse(event.data)));
 events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
 events.addEventListener("schedules", (event) => renderSchedules(JSON.parse(event.data)));
 events.addEventListener("schedule-history", (event) => renderScheduleHistory(JSON.parse(event.data)));
+events.addEventListener("projects", (event) => renderProjects(JSON.parse(event.data)));
 
 fetch("/api/status").then((res) => res.json()).then(renderStatus);

@@ -8,15 +8,36 @@
 </head>
 <body>
   <main class="app">
+    <div id="failureModal" class="modal hidden" role="alertdialog" aria-modal="true" aria-labelledby="failureTitle">
+      <div class="modal-card">
+        <div class="modal-title">
+          <h2 id="failureTitle">任务已暂停</h2>
+          <button id="failureClose" type="button" aria-label="关闭">×</button>
+        </div>
+        <p id="failureMessage">任务失败。</p>
+        <div class="modal-actions">
+          <button id="failureOk" class="primary" type="button">知道了</button>
+        </div>
+      </div>
+    </div>
+
     <header class="topbar">
       <div>
         <h1>番茄发布助手</h1>
         <p>本地章节上传、草稿发布、进度追踪</p>
       </div>
-      <div id="jobState" class="state idle">空闲</div>
+      <div class="topbar-actions">
+        <a class="topbar-link" href="/studio.html">返回总控台</a>
+        <div id="jobState" class="state idle">空闲</div>
+      </div>
     </header>
 
     <section class="panel grid">
+      <label>项目档案
+        <select id="projectSelect">
+          <option value="">不使用档案</option>
+        </select>
+      </label>
       <label>章节目录
         <input id="chapters" placeholder="C:\Users\...\某本书\chapters">
       </label>
@@ -35,21 +56,23 @@
           <option value="publish-drafts">发布草稿箱</option>
           <option value="dry-run">本地检查</option>
           <option value="upload-and-publish">直接发布（先上传再发布）</option>
-          <option value="publish">仅当前页发布</option>
         </select>
       </label>
       <label>每 N 章暂停
         <input id="confirmEvery" type="number" value="5" min="0">
       </label>
       <label>最低字数
-        <input id="minChars" type="number" value="950" min="0">
+        <input id="minChars" type="number" value="1000" min="1">
       </label>
       <label>作品后台 URL
-        <input id="targetUrl" placeholder="章节管理/草稿箱或新建章节页面 URL">
+        <input id="targetUrl" placeholder="填写该作品章节管理页 URL">
       </label>
-      <label>新建章节 URL
-        <input id="newUrl" placeholder="可选">
-      </label>
+      <details class="legacy-url">
+        <summary>兼容旧流程：新建章节 URL</summary>
+        <label>新建章节 URL
+          <input id="newUrl" placeholder="一般不用填">
+        </label>
+      </details>
     </section>
 
     <section class="panel options">
@@ -61,9 +84,22 @@
 
     <section class="actions">
       <button id="startBtn" class="primary">开始任务</button>
+      <button id="preflightBtn">发布前预检</button>
+      <button id="testUrlBtn">测试后台 URL</button>
+      <button id="saveProjectBtn">保存项目档案</button>
       <button id="continueBtn">继续 / 回车</button>
       <button id="stopBtn" class="danger">停止</button>
       <button id="refreshBtn">刷新进度</button>
+    </section>
+
+    <section class="panel">
+      <h2>发布前预检</h2>
+      <div id="preflightResult" class="preflight-result">尚未检查</div>
+    </section>
+
+    <section class="panel">
+      <h2>后台 URL 测试</h2>
+      <div id="urlTestResult" class="preflight-result">尚未测试</div>
     </section>
 
     <section class="panel">

@@ -8,7 +8,7 @@ const { chromium } = require("playwright");
 const DEFAULT_CHAPTERS_DIR = "";
 const USER_DATA_DIR = path.join(process.cwd(), ".fanqie-browser-profile");
 const RUNS_DIR = path.join(process.cwd(), ".fanqie-runs");
-const DEFAULT_MIN_CHARS = 950;
+const DEFAULT_MIN_CHARS = 1000;
 const EDGE_PATHS = [
   "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
   "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
@@ -25,6 +25,7 @@ function parseArgs(argv) {
     delay: 1200,
     url: "https://fanqienovel.com/writer/zone",
     newUrl: "",
+    backendBook: "",
     headless: false,
     minChars: DEFAULT_MIN_CHARS,
     confirmEach: false,
@@ -49,6 +50,7 @@ function parseArgs(argv) {
     else if (key === "--end" && next) args.end = Number(next), i++;
     else if (key === "--url" && next) args.url = next, i++;
     else if (key === "--new-url" && next) args.newUrl = next, i++;
+    else if (key === "--backend-book" && next) args.backendBook = next, i++;
     else if (key === "--delay" && next) args.delay = Number(next), i++;
     else if (key === "--mode" && next) args.mode = next, i++;
     else if (key === "--min-chars" && next) args.minChars = Number(next), i++;
@@ -89,6 +91,7 @@ function normalizeArgs(args) {
     "book",
     "url",
     "newUrl",
+    "backendBook",
     "minChars",
     "delay",
     "confirmEvery",
@@ -108,7 +111,19 @@ function normalizeArgs(args) {
       : path.basename(normalized);
     merged.book = base;
   }
+  if (!merged.backendBook && merged.url) merged.backendBook = extractBackendBookFromUrl(merged.url);
   return merged;
+}
+
+function extractBackendBookFromUrl(url) {
+  try {
+    const pathname = new URL(String(url)).pathname;
+    const raw = pathname.split("/").pop() || "";
+    const marker = raw.includes("&") ? raw.split("&").slice(1).join("&") : "";
+    return decodeURIComponent(marker).trim();
+  } catch {
+    return "";
+  }
 }
 
 function printHelp() {
@@ -135,7 +150,7 @@ function printHelp() {
   --confirm-every   每 N 章暂停确认一次
   --reset           清空本次范围的断点记录，从头处理
   --no-resume       忽略断点记录，但不删除记录文件
-  --min-chars       最低字数，默认 950
+  --min-chars       最低有效字数，默认 1000
   --delay           每章提交后等待毫秒数，默认 1200
   --url             打开的后台地址
   --new-url         真正的新建章节 URL。保存后每章用它打开新页面，避免复制编辑草稿 URL
@@ -186,6 +201,10 @@ function visibleCharCount(text) {
   return Array.from(text.replace(/\s/g, "")).length;
 }
 
+function platformCharCount(text) {
+  return (text.match(/\p{Script=Han}/gu) || []).length;
+}
+
 function listTxtFiles(dir) {
   const files = [];
   const walk = (current) => {
@@ -216,6 +235,7 @@ function readChapters(chaptersDir, start, end) {
         body,
         raw,
         chars: visibleCharCount(body),
+        platformChars: platformCharCount(body),
       };
     })
     .filter((chapter) => chapter.no >= start && chapter.no <= end)
@@ -260,7 +280,9 @@ function validateChapters(chapters, args) {
     byNo.set(chapter.no, chapter);
     if (!chapter.title) issues.push({ level: "error", no: chapter.no, message: "标题为空" });
     if (!chapter.body) issues.push({ level: "error", no: chapter.no, message: "正文为空" });
-    if (chapter.chars < args.minChars) issues.push({ level: "error", no: chapter.no, message: `正文不足 ${args.minChars} 字，当前 ${chapter.chars} 字` });
+    if (chapter.platformChars < args.minChars) {
+      issues.push({ level: "error", no: chapter.no, message: `有效正文不足 ${args.minChars} 字，当前有效汉字 ${chapter.platformChars} 字；含标点非空白字符 ${chapter.chars} 字` });
+    }
     if (repeatedParagraphRatio(chapter.body) > 0.2) issues.push({ level: "warn", no: chapter.no, message: "本章疑似存在重复段落" });
   }
 
@@ -451,13 +473,13 @@ async function selectChapterManagePage(browser, preferredPage) {
   return scored[0]?.score > 0 ? scored[0].page : preferredPage;
 }
 
-async function ensureEditorPageForDraft(browser, preferredPage) {
+async function ensureEditorPageForDraft(browser, preferredPage, book = "") {
   let best = await selectEditorPage(browser, preferredPage);
   const score = await pageScore(best);
   if (score.editorCount > 0 && score.serialEditor > 0) return best;
 
   console.log("当前还不是章节写入页，尝试点击“新建章节”进入写入页。");
-  const clicked = await clickByTexts(best, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 3000 });
+  const clicked = await clickNewChapterButton(best, { book, timeout: 3000 });
   if (clicked) {
     await wait(1800);
     best = await selectEditorPage(browser, best);
@@ -467,7 +489,7 @@ async function ensureEditorPageForDraft(browser, preferredPage) {
 
   for (const page of browser.pages()) {
     if (page === best) continue;
-    const clickedOther = await clickByTexts(page, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 1500 });
+    const clickedOther = await clickNewChapterButton(page, { book, timeout: 1500 });
     if (clickedOther) {
       await wait(1800);
       const candidate = await selectEditorPage(browser, page);
@@ -506,7 +528,7 @@ async function selectFreshEditorPage(browser, preferredPage, excludedPage, timeo
   return preferredPage;
 }
 
-async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
+async function openFreshChapterPage(browser, currentPage, newChapterUrl, book = "", managerUrl = "") {
   if (newChapterUrl) {
     const nextPage = await browser.newPage();
     await nextPage.goto(newChapterUrl, { waitUntil: "domcontentloaded" });
@@ -514,7 +536,7 @@ async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
     if (await isEditorPage(nextPage)) return nextPage;
 
     console.log("--new-url 打开后不是章节编辑页，尝试在该页面点击“新建章节”。");
-    const clicked = await clickByTexts(nextPage, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 3500 });
+    const clicked = await clickNewChapterButton(nextPage, { book, timeout: 3500 });
     if (clicked) {
       await wait(2000);
       const editor = await selectFreshEditorPage(browser, nextPage, currentPage);
@@ -526,7 +548,7 @@ async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
 
   const managerCandidates = browser.pages().filter((page) => page !== currentPage && !page.isClosed());
   for (const page of managerCandidates) {
-    const clicked = await clickByTexts(page, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 1800 });
+    const clicked = await clickNewChapterButton(page, { book, timeout: 1800 });
     if (clicked) {
       await wait(2000);
       const editor = await selectFreshEditorPage(browser, page, currentPage);
@@ -535,8 +557,20 @@ async function openFreshChapterPage(browser, currentPage, newChapterUrl) {
   }
 
   const nextPage = await browser.newPage();
+  if (managerUrl) {
+    await nextPage.goto(managerUrl, { waitUntil: "domcontentloaded" });
+    await wait(1800);
+    const clicked = await clickNewChapterButton(nextPage, { book, timeout: 3500 });
+    if (clicked) {
+      await wait(2000);
+      const editor = await selectFreshEditorPage(browser, nextPage, currentPage);
+      if (await isEditorPage(editor)) return editor;
+    }
+    console.log("已回到作品后台 URL，但未能自动进入新建章节页。请检查“新建章节”入口。");
+    return nextPage;
+  }
   await nextPage.goto("https://fanqienovel.com/writer/zone", { waitUntil: "domcontentloaded" });
-  console.log("没有提供 --new-url，也没有在其他标签页找到“新建章节”按钮。请手动打开新的章节编辑页。");
+  console.log("没有提供作品后台 URL，也没有在其他标签页找到“新建章节”按钮。请手动打开新的章节编辑页。");
   return nextPage;
 }
 
@@ -559,6 +593,79 @@ async function clickByTexts(page, texts, options = {}) {
         return true;
       } catch {}
     }
+  }
+  return false;
+}
+
+async function clickNewChapterButton(page, options = {}) {
+  const book = String(options.book || "").trim();
+  const timeout = options.timeout || 2500;
+  const result = await page.evaluate(({ book }) => {
+    const labels = ["新建章节", "添加章节", "写新章节", "创建章节", "新建"];
+    const normalize = (value) => String(value || "").replace(/\s+/g, "");
+    const bookText = normalize(book);
+    const isVisible = (node) => {
+      const rect = node.getBoundingClientRect();
+      const style = window.getComputedStyle(node);
+      return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
+    };
+    const textOf = (node) => normalize(node.textContent || node.getAttribute?.("aria-label") || node.getAttribute?.("title") || "");
+    const clickableOf = (node) => node.closest("button,a,[role='button'],.arco-btn,.semi-button");
+    const candidates = [];
+    for (const node of Array.from(document.querySelectorAll("button,a,[role='button'],.arco-btn,.semi-button,span"))) {
+      const text = textOf(node);
+      if (!labels.some((label) => text === label || text.includes(label))) continue;
+      const clickable = clickableOf(node);
+      if (!clickable || !isVisible(clickable)) continue;
+      const rect = clickable.getBoundingClientRect();
+      const rectKey = [
+        Math.round(rect.left / 4) * 4,
+        Math.round(rect.top / 4) * 4,
+        Math.round(rect.width / 4) * 4,
+        Math.round(rect.height / 4) * 4,
+      ].join(",");
+      let ancestor = clickable;
+      let score = 0;
+      let scopeText = "";
+      for (let depth = 0; ancestor && depth < 8; depth++) {
+        const ancestorText = normalize(ancestor.textContent || "");
+        if (bookText && ancestorText.includes(bookText)) score += 100 - depth * 5;
+        if (ancestorText.includes("章节管理")) score += 10;
+        if (ancestorText.includes("草稿箱")) score += 5;
+        if (!scopeText && ancestorText.length <= 2000) scopeText = ancestorText.slice(0, 200);
+        ancestor = ancestor.parentElement;
+      }
+      candidates.push({ clickable, text, score, scopeText, rectKey });
+    }
+    const unique = [];
+    const seen = new Set();
+    for (const item of candidates) {
+      const key = item.rectKey || item.clickable;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(item);
+    }
+    if (!unique.length) return { clicked: false, reason: "not-found", count: 0 };
+    unique.sort((a, b) => b.score - a.score);
+    const pageText = normalize(document.body?.innerText || "");
+    const pageMatchesBook = bookText && pageText.includes(bookText);
+    const pageLooksManager = /章节管理|草稿箱|章节名称|审核状态/.test(pageText);
+    if (unique.length > 1 && bookText && unique[0].score <= 0 && !(pageMatchesBook && pageLooksManager && unique.length <= 5)) {
+      return { clicked: false, reason: "ambiguous", count: unique.length };
+    }
+    if (unique.length > 1 && !bookText) {
+      return { clicked: false, reason: "ambiguous", count: unique.length };
+    }
+    unique[0].clickable.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    return { clicked: true, reason: "clicked", count: unique.length, score: unique[0].score };
+  }, { book }).catch((error) => ({ clicked: false, reason: error.message || String(error), count: 0 }));
+
+  if (result.clicked) {
+    await wait(Math.min(timeout, 1200));
+    return true;
+  }
+  if (result.reason === "ambiguous") {
+    console.log(`检测到 ${result.count} 个“新建章节”候选入口，无法确认属于《${book || "当前作品"}》，已停止自动点击以避免点错作品。请先点击“测试后台 URL”，确认书名匹配后再运行。`);
   }
   return false;
 }
@@ -915,14 +1022,61 @@ async function waitForDraftSaved(page, timeout = 15000) {
   await wait(3000);
   const started = Date.now();
   while (Date.now() - started < timeout) {
+    const block = await detectPublishBlock(page);
+    if (block) return { ok: false, reason: formatPublishBlockReason(block) };
     const saved = await page.evaluate(() => /已保存|保存到云端|已保存到云端/.test(document.body?.innerText || "")).catch(() => false);
     if (saved) {
       await wait(2000);
-      return true;
+      return { ok: true };
     }
     await wait(500);
   }
-  return false;
+  return { ok: false, reason: "保存草稿后未检测到已保存状态" };
+}
+
+async function waitForPublishConfirmed(page, timeout = 18000) {
+  await wait(1500);
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    const block = await detectPublishBlock(page);
+    if (block) return { ok: false, reason: formatPublishBlockReason(block) };
+    const state = await page.evaluate(() => {
+      const text = document.body?.innerText || "";
+      const successPattern = /(发布成功|提交成功|已提交|已发布|审核中|等待审核|发布完成|章节已发布)/;
+      const messageSuccess = Array.from(document.querySelectorAll(".arco-message, .arco-message-wrapper, .arco-notification, .arco-notification-wrapper, .semi-toast, .semi-toast-wrapper, [role='alert'], [class*='message'], [class*='toast'], [class*='notification']"))
+        .some((node) => successPattern.test(node.textContent || ""));
+      const editorVisible = Array.from(document.querySelectorAll(".ProseMirror[contenteditable='true'], [contenteditable='true'].ProseMirror"))
+        .some((node) => {
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      const success = messageSuccess || (!editorVisible && successPattern.test(text));
+      const pendingDialogs = Array.from(document.querySelectorAll(".arco-modal, [role='dialog'], .semi-modal"))
+        .map((node) => {
+          const value = node.textContent || "";
+          const rect = node.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && /(确认发布|发布设置|是否使用AI|提交|发布|错误|失败|上限|限制|提示)/.test(value)
+            ? value.replace(/\s+/g, "").slice(0, 180)
+            : "";
+        })
+        .filter(Boolean);
+      return { success, pendingDialog: pendingDialogs.length > 0, dialogText: pendingDialogs[0] || "" };
+    }).catch(() => ({ success: false, pendingDialog: false }));
+    if (state.success) return { ok: true };
+    if (state.pendingDialog) {
+      await wait(1000);
+      const block = await detectPublishBlock(page);
+      if (block) return { ok: false, reason: formatPublishBlockReason(block) };
+    }
+    await wait(700);
+  }
+  const dialogText = await page.evaluate(() => Array.from(document.querySelectorAll(".arco-modal, [role='dialog'], .semi-modal"))
+    .map((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 ? (node.textContent || "").replace(/\s+/g, "").slice(0, 180) : "";
+    })
+    .find(Boolean) || "").catch(() => "");
+  return { ok: false, reason: dialogText ? `发布后仍有提示框未处理：${dialogText}` : "发布后未检测到成功状态，已停止，避免日志虚假推进" };
 }
 
 async function submitChapter(page, mode) {
@@ -1148,11 +1302,26 @@ async function chooseAiYesInPublishSettings(page) {
 }
 
 async function confirmPublishDialogs(page) {
+  let publishSettingsConfirmClicks = 0;
+  let genericConfirmClicks = 0;
   for (let i = 0; i < 8; i++) {
+    const beforeBlock = await detectPublishBlock(page);
+    if (beforeBlock) {
+      const reason = formatPublishBlockReason(beforeBlock);
+      console.log(`发布流程停止：${reason}`);
+      return { blocked: true, reason };
+    }
+
     const typoModalVisible = await page.locator(".arco-modal").filter({ hasText: /检测到你还存错别字未修改|是否确定提交/ }).last().isVisible().catch(() => false);
     const handledTypo = await clickTypoSubmit(page);
     if (handledTypo) {
       await wait(2000);
+      const block = await detectPublishBlock(page);
+      if (block) {
+        const reason = formatPublishBlockReason(block);
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
       continue;
     }
     if (typoModalVisible) return { needsManual: true, reason: "错别字提示弹窗未能精确点击提交" };
@@ -1160,24 +1329,120 @@ async function confirmPublishDialogs(page) {
     const handledCheck = await clickBasicCheck(page);
     if (handledCheck) {
       await wait(2000);
+      const block = await detectPublishBlock(page);
+      if (block) {
+        const reason = formatPublishBlockReason(block);
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
       continue;
     }
 
     const handledPublishSettings = await handlePublishSettings(page);
     if (handledPublishSettings) {
+      publishSettingsConfirmClicks++;
       await wait(2500);
+      const block = await detectPublishBlock(page);
+      if (block) {
+        const reason = formatPublishBlockReason(block);
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
+      if (await isPublishSettingsModalVisible(page)) {
+        const reason = "发布被后台拦截：确认发布后发布设置弹窗仍未关闭，可能已被后台限制或拦截，已停止继续点击";
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
+      if (publishSettingsConfirmClicks >= 2) {
+        const reason = "发布被后台拦截：发布设置确认按钮已连续触发 2 次但未完成，已停止继续点击";
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
       continue;
     }
 
     const handledPublish = await clickDialogButton(page, ["确认发布", "确定发布"], 900);
     if (handledPublish) {
+      genericConfirmClicks++;
       await wait(2000);
+      const block = await detectPublishBlock(page);
+      if (block) {
+        const reason = formatPublishBlockReason(block);
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
+      if (genericConfirmClicks >= 2) {
+        const reason = "发布被后台拦截：确认发布按钮已连续触发 2 次但未完成，已停止继续点击";
+        console.log(`发布流程停止：${reason}`);
+        return { blocked: true, reason };
+      }
       continue;
     }
 
     break;
   }
   return { needsManual: false };
+}
+
+async function isPublishSettingsModalVisible(page) {
+  return page.locator(".arco-modal").filter({ hasText: /发布设置|是否使用AI|确认发布/ }).last().isVisible().catch(() => false);
+}
+
+function formatPublishBlockReason(block) {
+  const prefix = block.type === "daily-limit" ? "触发当日发布字数/章节限制" : "发布被后台拦截";
+  return `${prefix}：${block.message}`;
+}
+
+function isPublishBlockReason(reason) {
+  return /触发当日发布字数\/章节限制|发布被后台拦截|每日上限|今日.*上限|字数.*上限|提交字数超出/.test(String(reason || ""));
+}
+
+async function detectPublishBlock(page) {
+  return page.evaluate(() => {
+    const normalize = (value) => String(value || "").replace(/\s+/g, "");
+    const checks = [
+      { type: "daily-limit", re: /(今日|当日|当天|每日).{0,12}(发布|更新|上传|提交).{0,12}(上限|限制|额度|已满)/ },
+      { type: "daily-limit", re: /(发布|更新|上传|提交).{0,12}(字数|章节).{0,12}(上限|限制|额度|已满)/ },
+      { type: "daily-limit", re: /(字数|章节).{0,12}(超出|超过|达到).{0,12}(每日|今日|当日|当天).{0,12}(上限|限制|额度)/ },
+      { type: "daily-limit", re: /(超出|超过|达到).{0,12}(今日|当日|当天|每日).{0,12}(字数|发布|更新|上传|提交)/ },
+      { type: "daily-limit", re: /(今日|当日|当天).{0,12}(字数).{0,12}(不足|不够|已用完)/ },
+      { type: "daily-limit", re: /提交字数超出每日上限/ },
+      { type: "daily-limit", re: /(字数|章节|提交).{0,18}(超出|超过|达到|已达).{0,18}(上限|限制|额度)/ },
+      { type: "blocked", re: /(发布失败|提交失败|保存失败|上传失败|发布异常|上传异常|提交异常|保存异常|请稍后再试|内容未通过|无法发布|无法提交|无法上传)/ },
+      { type: "blocked", re: /(标题|正文|内容|章节|字数).{0,18}(为空|不足|过短|不合法|不符合|未填写|缺失|重复)/ },
+      { type: "blocked", re: /(弹窗|提示|错误|异常).{0,18}(失败|无法|不能|上限|限制)/ },
+    ];
+    const candidates = [
+      ...Array.from(document.querySelectorAll(".arco-message, .arco-message-wrapper, .arco-notification, .arco-notification-wrapper, .semi-toast, .semi-toast-wrapper, [role='alert'], [class*='message'], [class*='toast'], [class*='notification']")),
+      ...Array.from(document.querySelectorAll(".arco-modal, [role='dialog'], .semi-modal")),
+      document.body,
+    ]
+      .filter(Boolean)
+      .map((node) => normalize(node.innerText || node.textContent || ""))
+      .filter(Boolean);
+    let hit = null;
+    let message = "";
+    for (const candidate of candidates) {
+      hit = checks.find((item) => item.re.test(candidate));
+      if (hit) {
+        message = candidate;
+        break;
+      }
+    }
+    if (!hit) return null;
+    return {
+      type: hit.type,
+      message: message.slice(0, 240),
+    };
+  }).catch(() => null);
+}
+
+async function ensurePublishNotBlocked(page, chapter) {
+  await wait(1200);
+  const block = await detectPublishBlock(page);
+  if (!block) return;
+  const prefix = block.type === "daily-limit" ? "触发当日发布字数/章节限制" : "发布被后台拦截";
+  throw new Error(`第 ${chapter.no} 章${prefix}：${block.message}`);
 }
 
 async function chooseAiYes(page) {
@@ -1218,8 +1483,12 @@ async function publishDraftChapter(page, chapter) {
   }
   await wait(800);
   const dialogResult = await confirmPublishDialogs(page);
+  if (dialogResult?.blocked) return { ok: false, reason: dialogResult.reason };
   if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
-  await wait(1200);
+  const block = await detectPublishBlock(page);
+  if (block) return { ok: false, reason: `发布被后台拦截：${block.message}` };
+  const confirmed = await waitForPublishConfirmed(page);
+  if (!confirmed.ok) return { ok: false, reason: confirmed.reason };
   return { ok: true };
 }
 
@@ -1334,8 +1603,10 @@ async function publishCurrentEditorDraft(page, chapter) {
   await wait(1500);
 
   const dialogResult = await confirmPublishDialogs(page);
+  if (dialogResult?.blocked) return { ok: false, reason: dialogResult.reason };
   if (dialogResult?.needsManual) return { ok: false, reason: dialogResult.reason };
-  await wait(1200);
+  const confirmed = await waitForPublishConfirmed(page);
+  if (!confirmed.ok) return { ok: false, reason: confirmed.reason };
   return { ok: true };
 }
 
@@ -1350,10 +1621,10 @@ async function copyToClipboard(page, text) {
 }
 
 function printQualityReport(chapters, issues) {
-  const counts = chapters.map((chapter) => chapter.chars);
+  const counts = chapters.map((chapter) => chapter.platformChars ?? chapter.chars);
   const min = Math.min(...counts);
   const max = Math.max(...counts);
-  console.log(`本地检查：${chapters.length} 章，最短 ${min} 字，最长 ${max} 字`);
+  console.log(`本地检查：${chapters.length} 章，按平台口径最短 ${min} 字，最长 ${max} 字`);
   if (!issues.length) {
     console.log("检查通过：没有发现阻断问题。");
     return;
@@ -1397,6 +1668,15 @@ async function closeBrowserContext(browser) {
   await browser.close().catch(() => {});
 }
 
+async function pauseForManualFailureReview(rl, error) {
+  const message = error?.message || String(error || "未知错误");
+  console.log(`任务已暂停，浏览器页面已保留用于人工检查。失败原因：${message}`);
+  console.log("请在浏览器中检查当前弹窗、章节内容和后台状态。处理完成后，可在网页点“继续 / 回车”让任务退出并记录失败。");
+  try {
+    await rl.question("人工检查完成后按回车退出当前失败任务...");
+  } catch {}
+}
+
 async function main() {
   const args = normalizeArgs(parseArgs(process.argv));
   if (args.help) return printHelp();
@@ -1424,6 +1704,7 @@ async function main() {
   const completed = new Set(state.completed);
   const pending = chapters.filter((chapter) => !completed.has(chapter.no));
   console.log(`书名/项目：${args.book}`);
+  if (args.backendBook && args.backendBook !== args.book) console.log(`后台作品：${args.backendBook}`);
   console.log(`章节目录：${args.chapters}`);
   console.log(`运行模式：${args.mode === "publish-drafts" ? "发布草稿箱章节" : args.mode === "upload-and-publish" ? "填写后直接发布" : args.mode === "publish" ? "正式发布" : "保存草稿"}`);
   console.log(`断点：已完成 ${completed.size} 章，待处理 ${pending.length} 章。记录目录：${RUNS_DIR}`);
@@ -1441,8 +1722,9 @@ async function main() {
     await rl.question("请在浏览器里登录，并进入目标作品的“章节管理/新建章节”页面。准备好后按回车继续...");
   }
 
+  const pageBook = args.backendBook || args.book;
   let editorPage = (args.mode === "draft" || args.mode === "upload-and-publish")
-    ? await ensureEditorPageForDraft(browser, page)
+    ? await ensureEditorPageForDraft(browser, page, pageBook)
     : await selectEditorPage(browser, page);
   if (args.mode === "publish-drafts") {
     editorPage = await selectChapterManagePage(browser, page);
@@ -1474,6 +1756,12 @@ async function main() {
         if (!result.ok) {
           await saveFailure(editorPage, runId, chapter, result.reason);
           console.log(`第 ${chapter.no} 章未能自动发布：${result.reason}`);
+          if (args.autoStart) {
+            throw new Error(`第 ${chapter.no} 章发布失败：${result.reason}`);
+          }
+          if (isPublishBlockReason(result.reason)) {
+            throw new Error(`第 ${chapter.no} 章${result.reason}`);
+          }
           await rl.question("请手动处理该章，完成后按回车继续，或按 Ctrl+C 停止...");
         } else {
           console.log(`第 ${chapter.no} 章草稿发布已确认完成。`);
@@ -1491,6 +1779,7 @@ async function main() {
         state.failed.push({ no: chapter.no, message: error.message || String(error), time: new Date().toISOString() });
         saveState(runId, state);
         await saveFailure(editorPage, runId, chapter, error.message || String(error));
+        await pauseForManualFailureReview(rl, error);
         throw error;
       }
     }
@@ -1512,7 +1801,7 @@ async function main() {
       const dismissed = await dismissTutorialOverlays(currentEditorPage);
       if (dismissed) console.log(`已处理 ${dismissed} 步页面教程/引导遮罩。`);
 
-      const newChapterClicked = await clickByTexts(currentEditorPage, ["新建章节", "新建", "添加章节", "写新章节", "创建章节"], { timeout: 2500 });
+      const newChapterClicked = await clickNewChapterButton(currentEditorPage, { book: pageBook, timeout: 2500 });
       if (!newChapterClicked) console.log("未找到“新建章节”按钮，将尝试在当前页面直接填写。");
       await wait(600);
       await dismissTutorialOverlays(currentEditorPage);
@@ -1526,6 +1815,7 @@ async function main() {
         await copyToClipboard(currentEditorPage, `第${chapter.chapterNoText}章 ${chapter.title}\n\n${chapter.body}`);
         await saveFailure(currentEditorPage, runId, chapter, "未能自动定位标题或正文输入框");
         console.log(`第 ${chapter.no} 章未能自动定位输入框。内容已复制到剪贴板，请手动粘贴。`);
+        if (args.autoStart) throw new Error(`第 ${chapter.no} 章未能自动定位标题或正文输入框，自动任务已停止。`);
         await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
       } else {
         if (args.confirmEach) {
@@ -1546,34 +1836,62 @@ async function main() {
         if (!submitOk) {
           await saveFailure(currentEditorPage, runId, chapter, "未找到保存或发布按钮");
           console.log(`第 ${chapter.no} 章已填写，但未找到保存/发布按钮。请手动点击。`);
+          if (args.autoStart) throw new Error(`第 ${chapter.no} 章未找到保存或发布按钮，自动任务已停止。`);
           await rl.question("手动点击完成后按回车继续，或按 Ctrl+C 停止...");
           if (args.mode === "upload-and-publish") {
             const dialogResult = await confirmPublishDialogs(currentEditorPage);
+            if (dialogResult?.blocked) {
+              await saveFailure(currentEditorPage, runId, chapter, dialogResult.reason);
+              throw new Error(`第 ${chapter.no} 章${dialogResult.reason}`);
+            }
             if (dialogResult?.needsManual) {
               console.log(`发布弹窗需要手动处理：${dialogResult.reason}`);
+              if (args.autoStart) throw new Error(`第 ${chapter.no} 章发布弹窗需要手动处理：${dialogResult.reason}`);
               await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
+            }
+          }
+          if (args.mode === "upload-and-publish") await ensurePublishNotBlocked(currentEditorPage, chapter);
+          if (args.mode === "upload-and-publish") {
+            const published = await waitForPublishConfirmed(currentEditorPage);
+            if (!published.ok) {
+              await saveFailure(currentEditorPage, runId, chapter, published.reason);
+              throw new Error(`第 ${chapter.no} 章${published.reason}`);
             }
           }
         } else {
           if (args.mode === "upload-and-publish") {
             const dialogResult = await confirmPublishDialogs(currentEditorPage);
+            if (dialogResult?.blocked) {
+              await saveFailure(currentEditorPage, runId, chapter, dialogResult.reason);
+              throw new Error(`第 ${chapter.no} 章${dialogResult.reason}`);
+            }
             if (dialogResult?.needsManual) {
               console.log(`发布弹窗需要手动处理：${dialogResult.reason}`);
+              if (args.autoStart) throw new Error(`第 ${chapter.no} 章发布弹窗需要手动处理：${dialogResult.reason}`);
               await rl.question("手动处理完成后按回车继续，或按 Ctrl+C 停止...");
             }
           }
+          if (args.mode === "upload-and-publish") await ensurePublishNotBlocked(currentEditorPage, chapter);
           await wait(args.delay);
           if (args.mode === "draft") {
             const saved = await waitForDraftSaved(currentEditorPage);
-            if (!saved) {
-              await saveFailure(currentEditorPage, runId, chapter, "保存草稿后未检测到已保存状态");
-              throw new Error(`第 ${chapter.no} 章保存草稿后未检测到已保存状态，已停止以避免生成空白草稿。`);
+            if (!saved.ok) {
+              await saveFailure(currentEditorPage, runId, chapter, saved.reason);
+              throw new Error(`第 ${chapter.no} 章${saved.reason}，已停止以避免生成空白草稿。`);
             }
             console.log(`第 ${chapter.no} 章草稿已确认保存。`);
+          } else if (args.mode === "upload-and-publish" || args.mode === "publish") {
+            const published = await waitForPublishConfirmed(currentEditorPage);
+            if (!published.ok) {
+              await saveFailure(currentEditorPage, runId, chapter, published.reason);
+              throw new Error(`第 ${chapter.no} 章${published.reason}`);
+            }
+            console.log(`第 ${chapter.no} 章发布已确认成功。`);
           }
         }
       }
 
+      if (args.mode === "publish") await ensurePublishNotBlocked(currentEditorPage, chapter);
       state.completed.push(chapter.no);
       saveState(runId, state);
       processedThisRun++;
@@ -1586,7 +1904,7 @@ async function main() {
       const hasNext = index < pending.length - 1;
       if (hasNext) {
         console.log("当前章已保存，正在关闭当前编辑页并打开新的章节编辑页...");
-        const nextPage = await openFreshChapterPage(browser, currentEditorPage, newChapterUrl);
+        const nextPage = await openFreshChapterPage(browser, currentEditorPage, newChapterUrl, pageBook, args.url);
         await wait(1200);
         await dismissTutorialOverlays(nextPage);
         await currentEditorPage.close({ runBeforeUnload: false }).catch(() => {});
@@ -1596,6 +1914,7 @@ async function main() {
       state.failed.push({ no: chapter.no, message: error.message || String(error), time: new Date().toISOString() });
       saveState(runId, state);
       await saveFailure(currentEditorPage, runId, chapter, error.message || String(error));
+      await pauseForManualFailureReview(rl, error);
       throw error;
     }
   }

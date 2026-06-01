@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI小说工作室总控台</title>
+  <link rel="stylesheet" href="./studio.css">
+</head>
+<body>
+  <main class="studio">
+    <header class="shell-header">
+      <div>
+        <h1>AI小说工作室总控台</h1>
+        <p>作品生产、质量检查、发布进度与发布工作台入口</p>
+      </div>
+      <nav class="header-actions" aria-label="页面入口">
+        <a class="button ghost" href="/" target="_blank" rel="noopener">发布工作台</a>
+        <button id="refreshBtn" class="button">刷新工作台</button>
+      </nav>
+    </header>
+
+    <section class="status-strip" aria-label="工作室概览">
+      <article><span>当前主项目</span><strong id="mainProjectName">读取中</strong></article>
+      <article><span>已完成正文</span><strong id="mainProjectChapters">-</strong></article>
+      <article><span>发布前检查</span><strong id="mainProjectCheck">读取中</strong></article>
+      <article><span>下一批任务</span><strong id="mainProjectNext">读取中</strong></article>
+    </section>
+
+    <section class="main-grid">
+      <article id="workflowPanel" class="panel focus-panel">
+        <div class="panel-title">
+          <h2>今日工作流</h2>
+          <span class="pill">P0</span>
+        </div>
+        <ol class="workflow-list">
+          <li><button id="workflowCheckAll" type="button"><span id="taskMainNovel">读取主项目章节</span><b>检查</b></button></li>
+          <li><button id="workflowGenerateProject" type="button"><span>生成总设定、章纲和前10章</span><b>生成</b></button></li>
+          <li><button id="workflowContinueBatch" type="button"><span>按当前批量继续生成正文</span><b>续写</b></button></li>
+          <li><button id="workflowOpenPublisher" type="button"><span>打开发布工作台处理草稿</span><b>发布</b></button></li>
+        </ol>
+        <div class="panel-actions">
+          <button id="dryRunBtn" class="button primary">检查全部正文</button>
+          <button id="checkNextBtn" class="button">检查最近 10 章</button>
+        </div>
+      </article>
+
+      <article id="statusPanel" class="panel">
+        <div class="panel-title">
+          <h2>运行状态</h2>
+          <span id="jobBadge" class="pill neutral">读取中</span>
+        </div>
+        <dl class="status-list">
+          <div><dt>当前任务</dt><dd id="jobSummary">暂无任务</dd></div>
+          <div><dt>作品生成</dt><dd id="studioJobSummary">暂无任务</dd></div>
+          <div><dt>草稿上传进度</dt><dd id="uploadProgress">-</dd></div>
+          <div><dt>已发布进度</dt><dd id="publishProgress">-</dd></div>
+          <div><dt>定时任务</dt><dd id="scheduleCount">-</dd></div>
+        </dl>
+        <div class="health-box">
+          <div class="health-title"><span>系统自检</span><b id="healthBadge">读取中</b></div>
+          <ul id="healthList" class="health-list"></ul>
+        </div>
+      </article>
+    </section>
+
+    <section id="aiConfigPanel" class="panel">
+      <div class="panel-title">
+        <h2>AI模型配置</h2>
+        <span id="aiProviderBadge" class="pill neutral">读取中</span>
+      </div>
+      <div class="ai-config-grid">
+        <label>已保存模型
+          <select id="savedModelSelect">
+            <option value="">读取中</option>
+          </select>
+        </label>
+        <label>生成来源
+          <select id="aiProvider">
+            <option value="cloud">云端模型</option>
+            <option value="local">本地备用</option>
+          </select>
+        </label>
+        <label>API地址
+          <input id="aiBaseUrl" placeholder="https://api.openai.com/v1">
+        </label>
+        <label>模型名
+          <input id="aiModel" placeholder="例如 gpt-4.1-mini / deepseek-chat">
+        </label>
+        <label>API Key
+          <input id="aiApiKey" type="password" autocomplete="off" placeholder="留空表示不修改已保存的Key">
+        </label>
+      </div>
+      <div class="panel-actions">
+        <button id="saveAiConfigBtn" class="button primary">保存AI配置</button>
+        <button id="useCloudAiBtn" class="button">切回云端模型</button>
+        <button id="useLocalAiBtn" class="button">切回本地备用</button>
+      </div>
+      <p id="aiConfigHint" class="hint">云端用于正式生成，本地模型只作为备用。</p>
+    </section>
+
+    <section id="generationPanel" class="panel">
+      <div class="panel-title">
+        <h2>作品生成</h2>
+        <span id="studioJobBadge" class="pill neutral">空闲</span>
+      </div>
+      <div class="generator-grid">
+        <label>书名
+          <input id="genTitle" value="开局绑定听劝系统，我吹的牛成真了">
+        </label>
+        <label>类型
+          <select id="genGenre">
+            <option value="东方玄幻">东方玄幻</option>
+            <option value="悬疑">悬疑</option>
+            <option value="科幻">科幻</option>
+            <option value="历史">历史</option>
+            <option value="都市">都市</option>
+          </select>
+        </label>
+        <label>目标读者
+          <input id="genAudience" value="番茄男频读者">
+        </label>
+        <label>规划章节数
+          <input id="genChapters" type="number" value="1280" min="1" max="2000">
+        </label>
+        <div class="word-range-field">
+          <label>最低字数
+            <input id="genMinWords" type="number" value="1050" min="600" max="5000">
+          </label>
+          <label>
+            <span class="label-with-help">最高字数
+              <span class="field-with-help">
+                <span class="help-icon" tabindex="0" aria-label="字数范围说明">?</span>
+                <span class="help-tooltip">你在框里修改的最低/最高字数会发送给模型。模型通常会按这个范围写，但可能出现：写到范围下限附近仍偏短；写到范围上限外仍偏长；中文、标点、换行的统计口径和检查口径不完全一致。</span>
+              </span>
+            </span>
+            <input id="genMaxWords" type="number" value="1300" min="600" max="5000">
+          </label>
+        </div>
+        <label>续写批量
+          <input id="genBatchSize" type="number" value="10" min="1" max="200">
+        </label>
+      </div>
+      <label class="wide-label">核心创意
+        <textarea id="genPremise">穿越到东方玄幻世界的底层杂役弟子，觉醒听劝系统。只要别人对主角提出建议、嘲讽或者逼他立下承诺，系统就会生成任务；主角越听劝，兑现越狠，奖励越夸张。</textarea>
+      </label>
+      <div class="panel-actions generation-actions">
+        <button id="generateProjectBtn" class="button primary">生成项目包</button>
+        <button id="generateBatchBtn" class="button primary">继续生成所选章数</button>
+        <button class="button batch-preset" type="button" data-batch="10">10章</button>
+        <button class="button batch-preset" type="button" data-batch="30">30章</button>
+        <button class="button batch-preset" type="button" data-batch="50">50章</button>
+        <button class="button batch-preset" type="button" data-batch="100">100章</button>
+        <button id="stopGenerateBtn" class="button">停止生成</button>
+      </div>
+      <details class="advanced-options">
+        <summary>高级选项</summary>
+        <div class="advanced-grid">
+          <label>生成引擎
+            <select id="genEngine">
+              <option value="ai">使用AI模型</option>
+              <option value="template">模板备用</option>
+            </select>
+          </label>
+          <label>临时模型覆盖
+            <input id="genModel" placeholder="留空则使用上方AI配置">
+          </label>
+        </div>
+      </details>
+      <p class="hint">先点“生成项目包”：生成总设定、全书章纲、前10章。确认方向后，再按所选批量继续生成。</p>
+      <p id="generatorHint" class="hint">生成结果会保存到：AI小说工作室 / 生成作品</p>
+    </section>
+
+    <section id="qualityPanel" class="panel">
+      <div class="panel-title">
+        <h2>正文检查与批改</h2>
+        <span class="muted">字数、重复、质量</span>
+      </div>
+      <div class="quality-range-grid">
+        <label>起始章节
+          <input id="qualityStart" type="number" value="1" min="1">
+        </label>
+        <label>结束章节
+          <input id="qualityEnd" type="number" value="10" min="1">
+        </label>
+        <label>最低纯文字
+          <input id="qualityMinWords" type="number" value="1020" min="1">
+        </label>
+      </div>
+      <div class="panel-actions">
+        <button id="qualityFixFormatBtn" class="button primary">自动修复格式</button>
+        <button id="qualityWordCountBtn" class="button primary">字数检查</button>
+        <button id="qualityCheckAllBtn" class="button primary">检查全部正文</button>
+        <button id="qualityCheckRecentBtn" class="button">检查最近 10 章</button>
+        <button id="qualityAiReviewBtn" class="button">AI批改当前批次</button>
+      </div>
+      <p class="hint">自动修复格式只处理重复章号、开头空行等确定问题；字数检查会去除标点符号，纯文字必须大于 1020 字。</p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>作品库</h2>
+        <span id="overviewUpdated" class="muted">等待刷新</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>作品</th><th>章节</th><th>状态</th><th>下一步</th></tr></thead>
+          <tbody id="novelRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="main-grid">
+      <article class="panel">
+        <div class="panel-title">
+          <h2>生产流水线</h2>
+          <span class="muted">标准步骤</span>
+        </div>
+        <div id="pipeline" class="pipeline"></div>
+      </article>
+
+      <article id="opsPanel" class="panel">
+        <div class="panel-title">
+          <h2>发布运营</h2>
+          <span class="muted">番茄助手</span>
+        </div>
+        <div class="ops-list">
+          <a href="/" target="_blank" rel="noopener" class="ops-item"><span>打开发布工作台</span><b>进入</b></a>
+          <button id="openDryRunPlan" class="ops-item" type="button"><span>使用当前主项目做本地检查</span><b>执行</b></button>
+          <div class="ops-item static"><span>当前章节目录</span><b id="currentChaptersPath">读取中</b></div>
+        </div>
+      </article>
+    </section>
+
+    <section class="panel">
+      <div class="panel-title">
+        <h2>实时日志</h2>
+        <span class="muted">最近输出</span>
+      </div>
+      <pre id="logs" class="logs">等待任务输出...</pre>
+    </section>
+  </main>
+
+  <script src="./studio.js"></script>
+</body>
+</html>

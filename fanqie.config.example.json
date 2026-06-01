@@ -3,7 +3,7 @@
   "chapters": "D:/novels/示例书名/chapters",
   "url": "https://fanqienovel.com/writer/zone",
   "newUrl": "",
-  "minChars": 950,
+  "minChars": 1000,
   "delay": 1200,
   "confirmEvery": 5,
   "confirmEach": false,
