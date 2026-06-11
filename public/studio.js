@@ -3,6 +3,8 @@ const $ = (id) => document.getElementById(id);
 let overviewState = null;
 let aiConfigState = null;
 let statusState = null;
+let lastAiReviewReport = "";
+let lastRevisionDir = "";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -47,6 +49,7 @@ function renderOverview(overview) {
   $("overviewUpdated").textContent = `更新于 ${formatTime(overview.updatedAt)}`;
 
   const rows = overview.rows || [];
+  renderQualityProjectOptions(rows);
   $("novelRows").innerHTML = rows.length ? rows.map((item) => `
     <tr>
       <td><strong>${escapeHtml(item.name)}</strong></td>
@@ -65,6 +68,25 @@ function renderOverview(overview) {
   `).join("");
 }
 
+function renderQualityProjectOptions(rows = []) {
+  const select = $("qualityProjectSelect");
+  if (!select) return;
+  const current = select.value;
+  const candidates = rows.filter((item) => item.chaptersPath && Number(item.latestChapter || item.chapters || 0) > 0);
+  select.innerHTML = candidates.length ? candidates.map((item) => `
+    <option value="${escapeHtml(item.chaptersPath)}" data-latest="${escapeHtml(item.latestChapter || item.chapters || 1)}">
+      ${escapeHtml(item.name || "未命名作品")}（${escapeHtml(item.latestChapter || item.chapters || 0)}章）
+    </option>
+  `).join("") : `<option value="">未发现可检查作品</option>`;
+  if (candidates.some((item) => item.chaptersPath === current)) {
+    select.value = current;
+    return;
+  }
+  const mainPath = overviewState?.mainProject?.chaptersPath;
+  const defaultItem = candidates.find((item) => item.chaptersPath === mainPath) || candidates[0];
+  if (defaultItem) select.value = defaultItem.chaptersPath;
+}
+
 function findMainProgress(status) {
   const mainPath = overviewState?.mainProject?.chaptersPath;
   const items = status.progress || [];
@@ -81,7 +103,7 @@ function renderStatus(status) {
   $("jobBadge").className = `pill ${running || studioRunning ? "running" : "neutral"}`;
   $("jobSummary").textContent = status.job?.options?.mode || "暂无发布任务";
   $("studioJobSummary").textContent = studioRunning
-    ? `${status.studioJob?.options?.action === "batch" ? "续写正文" : "生成项目包"}，${status.studioJob?.options?.batchSize || 10}章/批`
+    ? `${status.studioJob?.options?.action === "batch" ? "续写正文" : "搭建故事系统"}，${status.studioJob?.options?.batchSize || 10}章/批`
     : (status.studioJob?.exited ? `已结束，退出码 ${status.studioJob.exitCode}` : "暂无生成任务");
 
   const progress = findMainProgress(status);
@@ -237,8 +259,30 @@ async function startDryRun(start, end) {
 }
 
 function qualityChaptersPath() {
-  const generated = (overviewState?.generatedWorks || []).find((item) => item.chaptersPath && Number(item.chapters || 0) > 0);
-  return generated?.chaptersPath || overviewState?.mainProject?.chaptersPath || "";
+  return $("qualityProjectSelect")?.value || overviewState?.mainProject?.chaptersPath || "";
+}
+
+function selectedQualityProject() {
+  const chaptersPath = qualityChaptersPath();
+  return (overviewState?.rows || []).find((item) => item.chaptersPath === chaptersPath) || null;
+}
+
+function selectedQualityLatestChapter() {
+  const project = selectedQualityProject();
+  return Number(project?.latestChapter || project?.chapters || 1);
+}
+
+async function openQualityProjectFolder() {
+  const chapters = qualityChaptersPath();
+  if (!chapters) throw new Error("没有找到可打开的作品目录");
+  const res = await fetch("/api/studio/open-folder", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapters }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "打开作品文件夹失败");
+  showNotice(`已打开作品文件夹：${data.folder}`);
 }
 
 async function fixFormat(start, end) {
@@ -256,6 +300,28 @@ async function fixFormat(start, end) {
   await refreshOverview();
 }
 
+async function cleanChapterRefs(start, end) {
+  const chapters = qualityChaptersPath();
+  if (!chapters) throw new Error("没有找到可清理的章节目录");
+  const res = await fetch("/api/studio/clean-chapter-refs", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapters, start, end }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "清理章节引用失败");
+  renderStatus(data.status);
+  const lines = [
+    `章节引用清理完成：扫描 ${data.scanned} 章，修改 ${data.changed.length} 章。`,
+    "",
+    ...(data.changed || []).slice(0, 60).map((item) => `第 ${item.no} 章：${item.count} 处`),
+  ];
+  if ((data.changed || []).length > 60) lines.push(`另有 ${data.changed.length - 60} 章已修改，列表省略。`);
+  $("qualityAiResult").textContent = lines.join("\n");
+  showNotice(`章节引用清理完成：修改 ${data.changed.length} 章。`);
+  await refreshOverview();
+}
+
 async function checkWordCount(start, end, minPureChars) {
   const chapters = qualityChaptersPath();
   if (!chapters) throw new Error("没有找到可检查的章节目录");
@@ -268,6 +334,71 @@ async function checkWordCount(start, end, minPureChars) {
   if (!res.ok) throw new Error(data.error || "字数检查失败");
   renderStatus(data.status);
   showNotice(`字数检查完成：扫描 ${data.scanned} 章，不达标 ${data.failed.length} 章。要求纯文字大于 ${data.minPureChars} 字。`);
+}
+
+async function reviewPlotWithAi(start, end) {
+  const chapters = qualityChaptersPath();
+  if (!chapters) throw new Error("没有找到可批改的章节目录");
+  $("qualityAiResult").textContent = "AI正在批改剧情，请稍等...";
+  const res = await fetch("/api/studio/ai-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapters, start, end }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "AI剧情批改失败");
+  renderStatus(data.status);
+  lastAiReviewReport = data.report || "";
+  lastRevisionDir = "";
+  $("qualityAiResult").textContent = data.report || "AI没有返回批改结果。";
+  showNotice(`AI剧情批改完成：已检查第 ${data.start}-${data.end} 章。`);
+}
+
+async function generateRevisionDraft(start, end) {
+  const chapters = qualityChaptersPath();
+  if (!chapters) throw new Error("没有找到可修改的章节目录");
+  if (!lastAiReviewReport) throw new Error("请先运行 AI剧情批改，再生成修改稿。");
+  $("qualityAiResult").textContent = "AI正在生成修改稿，原文不会被覆盖...";
+  const res = await fetch("/api/studio/rewrite-draft", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapters, start, end, review: lastAiReviewReport }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "生成修改稿失败");
+  renderStatus(data.status);
+  lastRevisionDir = data.revisionDir || "";
+  $("qualityAiResult").textContent = [
+    `修改稿已生成：${data.revisionDir}`,
+    `扫描 ${data.scanned} 章，生成 ${data.changed.length} 章。`,
+    "",
+    ...(data.changed || []).map((item) => `第 ${item.no} 章：${item.file}`),
+  ].join("\n");
+  showNotice(`修改稿已生成：${data.changed.length} 章，确认后才会覆盖原文。`);
+}
+
+async function applyRevisionDraft() {
+  const chapters = qualityChaptersPath();
+  if (!chapters) throw new Error("没有找到章节目录");
+  if (!lastRevisionDir) throw new Error("还没有可覆盖的修改稿，请先生成修改稿。");
+  const ok = window.confirm("确认用最新修改稿覆盖原文章节？系统会先备份原文。");
+  if (!ok) return;
+  const res = await fetch("/api/studio/apply-rewrite", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chapters, revisionDir: lastRevisionDir }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "覆盖原文失败");
+  renderStatus(data.status);
+  $("qualityAiResult").textContent = [
+    `已覆盖原文：${data.applied.length} 章。`,
+    `原文备份：${data.backupDir}`,
+    "",
+    ...(data.applied || []).map((item) => `第 ${item.no} 章：${item.file}`),
+  ].join("\n");
+  showNotice(`已覆盖原文：${data.applied.length} 章，原文已备份。`);
+  await refreshOverview();
 }
 
 function generationPayload(action) {
@@ -363,29 +494,44 @@ function bindActions() {
     model: "qwen2.5:3b",
     apiKey: "ollama",
   }).catch(showError));
+  $("qualityOpenFolderBtn").addEventListener("click", () => {
+    openQualityProjectFolder().catch(showError);
+  });
   $("qualityFixFormatBtn").addEventListener("click", () => {
     const { start, end } = qualityRange();
     fixFormat(start, end).catch(showError);
+  });
+  $("qualityCleanChapterRefsBtn").addEventListener("click", () => {
+    const { start, end } = qualityRange();
+    cleanChapterRefs(start, end).catch(showError);
   });
   $("qualityWordCountBtn").addEventListener("click", () => {
     const { start, end, minPureChars } = qualityRange();
     checkWordCount(start, end, minPureChars).catch(showError);
   });
   $("qualityCheckAllBtn").addEventListener("click", () => {
-    const latest = overviewState?.generatedWorks?.[0]?.latestChapter || overviewState?.mainProject?.latestChapter || overviewState?.mainProject?.chapters || 1;
+    const latest = selectedQualityLatestChapter();
     $("qualityStart").value = 1;
     $("qualityEnd").value = latest;
     startDryRun(1, latest).catch(showError);
   });
   $("qualityCheckRecentBtn").addEventListener("click", () => {
-    const latest = overviewState?.generatedWorks?.[0]?.latestChapter || overviewState?.mainProject?.latestChapter;
+    const latest = selectedQualityLatestChapter();
     const { start, end } = rangeForCheck(latest);
     $("qualityStart").value = start;
     $("qualityEnd").value = end;
     startDryRun(start, end).catch(showError);
   });
   $("qualityAiReviewBtn").addEventListener("click", () => {
-    showNotice("AI批改入口已预留：下一步可接云端模型，对最近批次输出剧情、重复、节奏和钩子修改建议。当前可先用本地检查核对字数和重复。");
+    const { start, end } = qualityRange();
+    reviewPlotWithAi(start, end).catch(showError);
+  });
+  $("qualityDraftRewriteBtn").addEventListener("click", () => {
+    const { start, end } = qualityRange();
+    generateRevisionDraft(start, end).catch(showError);
+  });
+  $("qualityApplyRewriteBtn").addEventListener("click", () => {
+    applyRevisionDraft().catch(showError);
   });
 }
 

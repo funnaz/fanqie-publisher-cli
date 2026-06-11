@@ -34,7 +34,7 @@
         </div>
         <ol class="workflow-list">
           <li><button id="workflowCheckAll" type="button"><span id="taskMainNovel">读取主项目章节</span><b>检查</b></button></li>
-          <li><button id="workflowGenerateProject" type="button"><span>生成总设定、章纲和前10章</span><b>生成</b></button></li>
+          <li><button id="workflowGenerateProject" type="button"><span>搭故事系统，再生成前10章</span><b>生成</b></button></li>
           <li><button id="workflowContinueBatch" type="button"><span>按当前批量继续生成正文</span><b>续写</b></button></li>
           <li><button id="workflowOpenPublisher" type="button"><span>打开发布工作台处理草稿</span><b>发布</b></button></li>
         </ol>
@@ -144,7 +144,7 @@
         <textarea id="genPremise">穿越到东方玄幻世界的底层杂役弟子，觉醒听劝系统。只要别人对主角提出建议、嘲讽或者逼他立下承诺，系统就会生成任务；主角越听劝，兑现越狠，奖励越夸张。</textarea>
       </label>
       <div class="panel-actions generation-actions">
-        <button id="generateProjectBtn" class="button primary">生成项目包</button>
+        <button id="generateProjectBtn" class="button primary">搭建系统并生成前10章</button>
         <button id="generateBatchBtn" class="button primary">继续生成所选章数</button>
         <button class="button batch-preset" type="button" data-batch="10">10章</button>
         <button class="button batch-preset" type="button" data-batch="30">30章</button>
@@ -166,7 +166,7 @@
           </label>
         </div>
       </details>
-      <p class="hint">先点“生成项目包”：生成总设定、全书章纲、前10章。确认方向后，再按所选批量继续生成。</p>
+      <p class="hint">先搭故事系统：作品定位、世界规则、人物驱动、长线结构、单元冲突、章节任务；再生成前10章，并对正文做连贯性和节奏校验。</p>
       <p id="generatorHint" class="hint">生成结果会保存到：AI小说工作室 / 生成作品</p>
     </section>
 
@@ -176,6 +176,11 @@
         <span class="muted">字数、重复、质量</span>
       </div>
       <div class="quality-range-grid">
+        <label>检查作品
+          <select id="qualityProjectSelect">
+            <option value="">等待读取作品库</option>
+          </select>
+        </label>
         <label>起始章节
           <input id="qualityStart" type="number" value="1" min="1">
         </label>
@@ -187,13 +192,18 @@
         </label>
       </div>
       <div class="panel-actions">
+        <button id="qualityOpenFolderBtn" class="button">打开作品文件夹</button>
         <button id="qualityFixFormatBtn" class="button primary">自动修复格式</button>
+        <button id="qualityCleanChapterRefsBtn" class="button primary">清理章节引用</button>
         <button id="qualityWordCountBtn" class="button primary">字数检查</button>
         <button id="qualityCheckAllBtn" class="button primary">检查全部正文</button>
         <button id="qualityCheckRecentBtn" class="button">检查最近 10 章</button>
-        <button id="qualityAiReviewBtn" class="button">AI批改当前批次</button>
+        <button id="qualityAiReviewBtn" class="button accent">AI剧情批改</button>
+        <button id="qualityDraftRewriteBtn" class="button accent">生成修改稿</button>
+        <button id="qualityApplyRewriteBtn" class="button danger">确认覆盖原文</button>
       </div>
-      <p class="hint">自动修复格式只处理重复章号、开头空行等确定问题；字数检查会去除标点符号，纯文字必须大于 1020 字。</p>
+      <p class="hint">建议流程：AI剧情批改 → 生成修改稿 → 人工查看结果 → 确认覆盖原文。修改稿不会直接覆盖正文，覆盖前会自动备份原文。</p>
+      <pre id="qualityAiResult" class="review-result">AI剧情批改结果会显示在这里。</pre>
     </section>
 
     <section class="panel">

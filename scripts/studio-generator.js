@@ -207,11 +207,15 @@ function sampleChapterCount(args) {
   return Math.min(args.chapters, args.batchSize);
 }
 
+const PIPELINE_TEXT = "作品定位 → 世界规则 → 人物驱动 → 长线结构 → 单元冲突 → 章节任务 → 正文表达 → 连贯性校验 → 节奏优化";
+
 function systemPrompt(args) {
   return [
     "你是中文网文工作室的长篇小说主笔。",
     "必须根据用户给出的书名、类型、核心创意生成，不得套用其他已有作品设定。",
-    "写作优先级：具体场景 > 明确冲突 > 主角选择 > 反转钩子。",
+    `生产顺序：${PIPELINE_TEXT}。`,
+    "原则：先保证故事能长出来，再保证每一章好看。",
+    "写作优先级：具体场景 > 明确冲突 > 主角选择 > 反转钩子 > 语言润色。",
     "不要写创作说明，不要复述规则，只输出可保存到文件的内容。",
     `类型：${args.genre}`,
     `目标读者：${args.audience}`,
@@ -229,7 +233,17 @@ async function aiArchitecture(args) {
         `书名：《${args.title}》`,
         `核心创意：${args.premise}`,
         "",
-        "生成完整总设定，包含：一句话卖点、主角欲望、核心爽点、系统规则与代价、主要对手、世界观、前三卷剧情、长线伏笔。",
+        "先搭建可长期连载的故事生产系统，再生成总设定。",
+        "必须按以下九段输出，每段都要具体可执行：",
+        "1. 作品定位：读者、类型承诺、核心爽点、一句话卖点。",
+        "2. 世界规则：时代、势力、力量体系、限制、代价、禁忌。",
+        "3. 人物驱动：主角欲望、短板、行动方式、关键关系、主要对手。",
+        "4. 长线结构：分卷目标、长线谜团、伏笔、承诺兑现、卷末高潮。",
+        "5. 单元冲突：每20章一个单元的目标、阻力、升级、反转、阶段钩子。",
+        "6. 章节任务规则：每章如何从单元冲突拆成可写任务。",
+        "7. 正文表达规则：场景、动作、对白、压力、选择、反转、钩子。",
+        "8. 连贯性校验规则：人物口吻、设定、因果、伏笔、前文风格。",
+        "9. 节奏优化规则：开场推进、冲突密度、爽点兑现、段落去重、结尾钩子。",
       ].join("\n"),
     },
   ], 0.65);
@@ -245,16 +259,127 @@ async function aiBlueprint(args, architecture) {
         `规划章节数：${args.chapters}`,
         `总设定：\n${architecture}`,
         "",
-        "生成可执行章纲。若章节很多，按每20章一个单元写：单元目标、主要冲突、关键反转、结尾钩子。",
-        "前10章必须逐章详细列出，且每章的场景、冲突对象、反转、钩子都必须不同。",
+        "生成可执行长线章纲，必须先保证故事能长出来，再保证每一章好看。",
+        "若章节很多，按每20章一个单元写：单元目标、主要冲突、人物变化、关键反转、阶段钩子、必须回收的伏笔。",
+        "前10章必须逐章详细列出，每章都要包含：作品定位承接、世界规则触发、人物驱动、所属单元冲突、章节任务、正文表达重点、连贯性风险、节奏优化点。",
+        "每章的场景、冲突对象、爽点兑现、反转、钩子都必须不同。",
         "禁止每章只改标题、功能句重复、冲突句重复。",
       ].join("\n"),
     },
   ], 0.65);
 }
 
-async function aiChapter(args, architecture, blueprint, prior, no) {
+function extractChapterTask(blueprint, no) {
+  const text = String(blueprint || "");
+  const escapedNo = String(no).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const nextNo = String(no + 1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`第\\s*${escapedNo}\\s*章[\\s\\S]*?(?=\\n\\s*第\\s*${nextNo}\\s*章|\\n\\s*第\\s*\\d+\\s*[-—至到]|$)`),
+    new RegExp(`${escapedNo}[\\.、\\s-]+[\\s\\S]*?(?=\\n\\s*${nextNo}[\\.、\\s-]+|$)`),
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match && match[0].trim().length > 20) return match[0].trim().slice(0, 1800);
+  }
+  return `第${no}章任务：承接前文，推动当前单元冲突，制造主角主动选择，完成一次信息变化或爽点兑现，结尾留下自然钩子。`;
+}
+
+async function aiQualityReview(args, architecture, blueprint, prior, no, chapter) {
   const recent = prior.slice(-3).map((item) => `第${item.no}章：${item.summary}`).join("\n") || "开篇。";
+  const task = extractChapterTask(blueprint, no);
+  return callAi(args, [
+    { role: "system", content: [
+      "你是中文网文工作室的质量总编，只判断是否合格，不重写正文。",
+      "检查顺序：作品定位、世界规则、人物驱动、长线结构、单元冲突、章节任务、正文表达、连贯性、节奏。",
+      "必须严格挑问题，但只把会导致后续剧情断裂、人物崩坏、设定冲突、正文不可发布的问题判为不合格。",
+      "普通可优化问题只写入issues，pass仍可为true。",
+    ].join("\n") },
+    {
+      role: "user",
+      content: [
+        `书名：《${args.title}》`,
+        `当前章节：第${no}章`,
+        `目标字数：${wordRangeText(args)}`,
+        `总设定：\n${architecture.slice(0, 5000)}`,
+        `章节任务：\n${task}`,
+        `最近剧情：\n${recent}`,
+        "",
+        "请检查下面正文是否可以保存为正式章节。",
+        "只输出JSON，不要Markdown：",
+        "{\"pass\":true,\"score\":85,\"issues\":[\"具体问题\"],\"rewriteInstruction\":\"若不合格，给出重写指令\"}",
+        "",
+        chapter.text,
+      ].join("\n\n"),
+    },
+  ], 0.2);
+}
+
+function parseQualityResult(raw) {
+  const text = String(raw || "").replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    const data = JSON.parse(match ? match[0] : text);
+    return {
+      pass: Boolean(data.pass),
+      score: Number(data.score || 0),
+      issues: Array.isArray(data.issues) ? data.issues.map(String) : [],
+      rewriteInstruction: String(data.rewriteInstruction || ""),
+      raw: text,
+    };
+  } catch {
+    return { pass: false, score: 0, issues: ["质量校验返回格式异常"], rewriteInstruction: "重写本章，严格按章节任务输出正文。", raw: text };
+  }
+}
+
+function isBlockingQualityFailure(report) {
+  if (report.pass && report.score >= 70) return false;
+  const joined = `${report.issues.join("；")}；${report.rewriteInstruction}`;
+  if (/断裂|崩|冲突|矛盾|未完成|不成立|不可发布|标题不符|任务未完成|正文为空|过短|重复|相似/.test(joined)) return true;
+  return Number(report.score || 0) < 60;
+}
+
+async function checkAndRewriteChapter(args, architecture, blueprint, prior, no, chapter) {
+  const reports = [];
+  let current = chapter;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let report = {
+      pass: true,
+      score: 80,
+      issues: [],
+      rewriteInstruction: "",
+      raw: "local-pass",
+    };
+    if (repeatedLineRatio(current.text) > 0.08) {
+      report = { pass: false, score: 45, issues: ["本章疑似存在重复句段"], rewriteInstruction: "彻底重写，换场景推进和段落结构。", raw: "local-repeat" };
+    } else if (tooSimilarToPrior(current.text, prior)) {
+      report = { pass: false, score: 45, issues: ["与最近章节开场或结构过于相似"], rewriteInstruction: "彻底重写，换开场、冲突对象和爽点兑现方式。", raw: "local-similar" };
+    } else if (args.engine === "ai") {
+      report = parseQualityResult(await aiQualityReview(args, architecture, blueprint, prior, no, current));
+    }
+    reports.push({ attempt: attempt + 1, ...report });
+    if (!isBlockingQualityFailure(report)) return { chapter: current, reports, blocked: false };
+    if (attempt >= 2) break;
+    const instruction = [
+      "上一版未通过质量校验，必须重写本章。",
+      `问题：${report.issues.join("；") || "质量不足"}`,
+      report.rewriteInstruction,
+      "重写要求：不保留原段落，先完成章节任务，再优化场景、冲突、主角选择、反转和钩子。",
+    ].filter(Boolean).join("\n");
+    const rewritten = await aiChapter(args, architecture, blueprint, prior, no, instruction, { skipQualityGate: true });
+    current = rewritten;
+  }
+  const last = reports.at(-1);
+  return {
+    chapter: current,
+    reports,
+    blocked: true,
+    reason: `第 ${no} 章质量校验未通过：${last?.issues?.join("；") || "未知问题"}`,
+  };
+}
+
+async function aiChapter(args, architecture, blueprint, prior, no, extraInstruction = "", options = {}) {
+  const recent = prior.slice(-3).map((item) => `第${item.no}章：${item.summary}`).join("\n") || "开篇。";
+  const chapterTask = extractChapterTask(blueprint, no);
   const buildMessages = (extra = "") => [
     { role: "system", content: systemPrompt(args) },
     {
@@ -264,13 +389,15 @@ async function aiChapter(args, architecture, blueprint, prior, no) {
         `当前章节：第${no}章`,
         `目标字数：${wordRangeText(args)}`,
         `总设定：\n${architecture}`,
-        `章纲：\n${blueprint}`,
+        `当前章节任务：\n${chapterTask}`,
         `最近剧情：\n${recent}`,
         "",
-        "直接写本章正文。第一行必须是“第X章 标题”，第二行空行，然后正文。",
+        "先在脑中完成：作品定位 → 世界规则 → 人物驱动 → 长线结构 → 单元冲突 → 章节任务 → 正文表达 → 连贯性校验 → 节奏优化，然后只输出正文。",
+        "直接写本章正文。第一行必须是“第X章 标题”，第二行空行，然后正文。不要输出分析、清单、标签或校验报告。",
         `正文必须控制在${wordRangeText(args)}，不要超出最高字数；宁可收束场景，也不要继续扩写。`,
         "必须有具体场景、人物动作、冲突升级、主角选择和结尾钩子。",
         "不得复用最近三章的开场、嘲讽句、测验桥段或段落结构。",
+        extraInstruction,
         extra,
       ].filter(Boolean).join("\n\n"),
     },
@@ -282,12 +409,22 @@ async function aiChapter(args, architecture, blueprint, prior, no) {
     content = await callAi(args, buildMessages("上一次草稿重复度过高。请彻底重写：换场景、换冲突对象、换开场、换反转，不保留原段落。"), 0.9);
     chapter = normalizeChapterText(args, no, content);
   }
+  if (options.skipQualityGate) return chapter;
   return chapter;
 }
 
 function plannedArchitecture(args) {
   return normalize([
     `《${args.title}》总设定`,
+    "",
+    `生产流程：${PIPELINE_TEXT}`,
+    "",
+    "作品定位：东方玄幻男频爽文，核心承诺是底层主角把嘲讽和建议变成可执行任务，用行动兑现所有人认为不可能的牛。",
+    "世界规则：宗门、王朝、仙门和旧神残魂共同构成压迫秩序；力量来自修炼、资源、传承和代价交换，越高阶的改命越容易被旧秩序察觉。",
+    "人物驱动：主角不是等系统喂饭的人，他必须主动接话、立约、冒险、布局，把外界压力变成自己的上升路径。",
+    "长线结构：外门逆袭、内门争锋、王朝开局、仙门战争、诸天清算层层扩大，每一卷都兑现一个早期承诺，同时抛出更大代价。",
+    "单元冲突：每20章围绕一个明确目标推进，目标失败会付出可见代价，目标成功必须改变人物关系或世界认知。",
+    "章节任务：每章必须先有场景、冲突对象、主角选择、爽点兑现或信息变化、结尾钩子。",
     "",
     `类型：${args.genre}`,
     `目标读者：${args.audience}`,
@@ -403,6 +540,47 @@ function writeState(statePath, state) {
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
 }
 
+function saveNeedsRepairChapter(bookDir, args, no, chapter, reports, reason) {
+  const repairDir = path.join(bookDir, "_needs_repair");
+  ensureDir(repairDir);
+  const prefix = String(no).padStart(3, "0");
+  const base = `${prefix}-第${no}章 ${safeName(chapter.title)}`;
+  const draftPath = path.join(repairDir, `${base}.txt`);
+  const reportPath = path.join(repairDir, `${base}.quality.json`);
+  const instructionPath = path.join(repairDir, `${base}-修复指令.txt`);
+  const last = reports.at(-1) || {};
+  fs.writeFileSync(draftPath, chapter.text, "utf8");
+  fs.writeFileSync(reportPath, JSON.stringify({
+    no,
+    title: chapter.title,
+    passed: false,
+    blocked: true,
+    reason,
+    reports,
+    pipeline: PIPELINE_TEXT,
+    checkedAt: new Date().toISOString(),
+  }, null, 2), "utf8");
+  fs.writeFileSync(instructionPath, normalize([
+    `第 ${no} 章进入待修复队列。`,
+    "",
+    `失败原因：${reason}`,
+    "",
+    "下一步自动化动作：",
+    "1. 保留当前草稿，不进入正式 chapters 目录。",
+    "2. 根据下方问题重新生成本章。",
+    "3. 本章通过后，再继续生成后续章节，避免后文接在错误版本上。",
+    "",
+    "质检问题：",
+    ...(last.issues || []).map((item) => `- ${item}`),
+    "",
+    "重写指令：",
+    last.rewriteInstruction || "重写本章，确保章节任务完成、人物口吻连贯、世界规则一致、结尾有钩子。",
+    "",
+    `目标字数：${wordRangeText(args)}`,
+  ].join("\r\n")), "utf8");
+  return { no, draftPath, reportPath, instructionPath, reason };
+}
+
 async function writeNovel(args) {
   if (args.action === "batch") return writeNextBatch(args);
 
@@ -461,6 +639,15 @@ async function writeNovel(args) {
 
   fs.writeFileSync(path.join(bookDir, "00-总设定.txt"), architecture, "utf8");
   fs.writeFileSync(path.join(bookDir, "01-章纲.txt"), blueprint, "utf8");
+  fs.writeFileSync(path.join(bookDir, "00-故事生产系统.txt"), normalize([
+    `《${args.title}》故事生产系统`,
+    "",
+    PIPELINE_TEXT,
+    "",
+    "使用规则：先确认作品定位、世界规则、人物驱动和长线结构能支撑长篇，再进入单元冲突和章节任务；每章正文保存前必须做连贯性校验和节奏优化。",
+    "",
+    architecture,
+  ].join("\r\n")), "utf8");
 
   writeState(statePath, {
     title: args.title,
@@ -483,8 +670,38 @@ async function writeNovel(args) {
 
   for (let no = 1; no <= targetWriteChapters; no++) {
     let chapter;
+    let qualityReports = [];
     try {
       chapter = engineUsed === "ai" ? await aiChapter(args, architecture, blueprint, generated, no) : plannedSampleChapter(args, no);
+      if (engineUsed === "ai") {
+        const checked = await checkAndRewriteChapter(args, architecture, blueprint, generated, no, chapter);
+        chapter = checked.chapter;
+        qualityReports = checked.reports;
+        if (checked.blocked) {
+          const blocked = saveNeedsRepairChapter(bookDir, args, no, chapter, qualityReports, checked.reason);
+          writeState(statePath, {
+            title: args.title,
+            genre: args.genre,
+            premise: args.premise,
+            audience: args.audience,
+            plannedChapters: args.chapters,
+            generatedChapters: generated.length,
+            targetWriteChapters,
+            words: args.minWords,
+            minWords: args.minWords,
+            maxWords: args.maxWords,
+            engine: engineUsed,
+            model: args.engine === "ai" ? aiConfig(args).model : "",
+            output: bookDir,
+            status: "needs-repair",
+            blockedChapter: blocked,
+            note: "章节质量未通过，已进入待修复队列，正式正文未被覆盖。",
+            updatedAt: new Date().toISOString(),
+            summaries: generated,
+          });
+          throw new Error(`${checked.reason}。已保存待修复草稿：${blocked.draftPath}`);
+        }
+      }
     } catch (error) {
       if (args.engine === "ai" && !isLocalAi(args)) {
         throw new Error(`第 ${no} 章云端 AI 生成失败，已停止，未使用模板伪生成：${error.message || error}`);
@@ -497,11 +714,20 @@ async function writeNovel(args) {
     ensureDir(dir);
     const file = path.join(dir, `${String(no).padStart(3, "0")}-第${no}章 ${safeName(chapter.title)}.txt`);
     fs.writeFileSync(file, chapter.text, "utf8");
+    fs.writeFileSync(file.replace(/\.txt$/, ".quality.json"), JSON.stringify({
+      no,
+      title: chapter.title,
+      passed: qualityReports.length ? Boolean(qualityReports.at(-1).pass) : true,
+      reports: qualityReports,
+      pipeline: PIPELINE_TEXT,
+      checkedAt: new Date().toISOString(),
+    }, null, 2), "utf8");
     generated.push({
       no,
       title: chapter.title,
       summary: chapter.summary,
       opening: chapter.text.replace(/\s/g, "").slice(0, 120),
+      qualityScore: qualityReports.at(-1)?.score || null,
     });
     writeState(statePath, {
       title: args.title,
@@ -523,6 +749,7 @@ async function writeNovel(args) {
       summaries: generated,
     });
     console.log(`已生成第 ${no} 章：${chapter.title}`);
+    if (qualityReports.length) console.log(`第 ${no} 章质量校验通过，分数：${qualityReports.at(-1).score}`);
   }
 
   writeState(statePath, {
@@ -553,6 +780,7 @@ async function writeNovel(args) {
     note,
     "",
     "说明：大长篇不能一次性批量生成正文，否则质量会严重下降。建议确认总设定和前几章样章后，再按每批 5-10 章继续精写。",
+    "高质量流程：作品定位 → 世界规则 → 人物驱动 → 长线结构 → 单元冲突 → 章节任务 → 正文表达 → 连贯性校验 → 节奏优化。",
     `目录：${bookDir}`,
   ].filter(Boolean).join("\r\n")), "utf8");
   return bookDir;
@@ -594,20 +822,55 @@ async function writeNextBatch(args) {
   const generated = [];
   for (let no = start; no <= end; no++) {
     let chapter;
+    let qualityReports = [];
     if (args.engine === "template") {
       chapter = plannedSampleChapter(args, no);
     } else {
       chapter = await aiChapter(args, architecture, blueprint, summaries.concat(generated), no);
+      const checked = await checkAndRewriteChapter(args, architecture, blueprint, summaries.concat(generated), no, chapter);
+      chapter = checked.chapter;
+      qualityReports = checked.reports;
+      if (checked.blocked) {
+        const blocked = saveNeedsRepairChapter(bookDir, args, no, chapter, qualityReports, checked.reason);
+        writeState(statePath, {
+          ...oldState,
+          title: args.title,
+          plannedChapters: args.chapters,
+          generatedChapters: start - 1 + generated.length,
+          words: args.minWords,
+          minWords: args.minWords,
+          maxWords: args.maxWords,
+          engine: "ai-batch",
+          model: aiConfig(args).model,
+          output: bookDir,
+          status: "needs-repair",
+          currentBatch: { start, end },
+          blockedChapter: blocked,
+          note: "章节质量未通过，已进入待修复队列，正式正文未被覆盖。",
+          updatedAt: new Date().toISOString(),
+          summaries: summaries.concat(generated),
+        });
+        throw new Error(`${checked.reason}。已保存待修复草稿：${blocked.draftPath}`);
+      }
     }
     const dir = chapterDir(bookDir, no);
     ensureDir(dir);
     const file = path.join(dir, `${String(no).padStart(3, "0")}-第${no}章 ${safeName(chapter.title)}.txt`);
     fs.writeFileSync(file, chapter.text, "utf8");
+    fs.writeFileSync(file.replace(/\.txt$/, ".quality.json"), JSON.stringify({
+      no,
+      title: chapter.title,
+      passed: qualityReports.length ? Boolean(qualityReports.at(-1).pass) : true,
+      reports: qualityReports,
+      pipeline: PIPELINE_TEXT,
+      checkedAt: new Date().toISOString(),
+    }, null, 2), "utf8");
     generated.push({
       no,
       title: chapter.title,
       summary: chapter.summary,
       opening: chapter.text.replace(/\s/g, "").slice(0, 120),
+      qualityScore: qualityReports.at(-1)?.score || null,
     });
     writeState(statePath, {
       ...oldState,
@@ -626,6 +889,7 @@ async function writeNextBatch(args) {
       summaries: summaries.concat(generated),
     });
     console.log(`已生成第 ${no} 章：${chapter.title}`);
+    if (qualityReports.length) console.log(`第 ${no} 章质量校验通过，分数：${qualityReports.at(-1).score}`);
   }
 
   writeState(statePath, {
@@ -650,6 +914,7 @@ async function writeNextBatch(args) {
     `追加生成：第 ${start}-${end} 章`,
     `时间：${new Date().toISOString()}`,
     `引擎：${args.engine === "template" ? "template-batch" : "ai-batch"}`,
+    `流程：${PIPELINE_TEXT}`,
   ].join("\r\n")), "utf8");
   return bookDir;
 }

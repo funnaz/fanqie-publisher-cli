@@ -59,7 +59,17 @@ function renderProjects(items = []) {
   projectSelect.innerHTML = `<option value="">不使用档案</option>` + items.map((item) => `
     <option value="${escapeHtml(item.id)}">${escapeHtml(item.name || item.book || "未命名作品")}</option>
   `).join("");
-  if (items.some((item) => item.id === current)) projectSelect.value = current;
+  if (items.some((item) => item.id === current)) {
+    projectSelect.value = current;
+    return;
+  }
+  if ($("chapters").value.trim()) return;
+  const defaultProject = items.find((item) => item.url || item.backendBook)
+    || items.find((item) => String(item.chapters || "").includes("苍生印_重写版"))
+    || items[0];
+  if (!defaultProject) return;
+  projectSelect.value = defaultProject.id;
+  applyProject(defaultProject);
 }
 
 function applyProject(project) {

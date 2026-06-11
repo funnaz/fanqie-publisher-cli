@@ -104,6 +104,20 @@ p {
   box-shadow: 0 8px 18px rgba(255, 90, 31, 0.2);
 }
 
+.button.accent {
+  border-color: #ff7a59;
+  background: #fff1eb;
+  color: #b53416;
+  font-weight: 700;
+}
+
+.button.danger {
+  border-color: #e65a3a;
+  background: #fff;
+  color: #b42318;
+  font-weight: 700;
+}
+
 .button.ghost {
   background: #fff8f3;
 }
@@ -282,9 +296,24 @@ textarea {
 
 .quality-range-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 180px));
+  grid-template-columns: minmax(360px, 2fr) repeat(3, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.review-result {
+  margin: 12px 0 0;
+  min-height: 140px;
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff8f5;
+  color: #37231a;
+  padding: 14px;
+  font: 13px/1.7 "Microsoft YaHei", system-ui, sans-serif;
 }
 
 .wide-label {
@@ -598,6 +627,10 @@ th {
   .quality-range-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+
+  .quality-range-grid > label:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 560px) {
@@ -623,7 +656,8 @@ th {
   }
 
   .generator-grid > label:first-child,
-  .word-range-field {
+  .word-range-field,
+  .quality-range-grid > label:first-child {
     grid-column: auto;
   }
 

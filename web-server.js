@@ -281,6 +281,37 @@ function publicStudioAiConfig(config = resolveStudioAiConfig()) {
   };
 }
 
+async function callStudioAi(messages, options = {}) {
+  const cfg = resolveStudioAiConfig(options);
+  if (!cfg.apiKey) throw new Error("AI模型未配置 API Key，请先在总控台保存模型配置。");
+  const controller = new AbortController();
+  const timeoutMs = Number(process.env.STUDIO_AI_TIMEOUT_MS || 120000);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const payload = {
+    model: cfg.model,
+    messages,
+    temperature: Number(options.temperature ?? 0.35),
+  };
+  if (/deepseek/i.test(cfg.baseUrl) || /deepseek-v4/i.test(cfg.model)) {
+    payload.thinking = { type: "disabled" };
+  }
+  const response = await fetch(`${cfg.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    signal: controller.signal,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  }).finally(() => clearTimeout(timer));
+  const body = await response.text();
+  if (!response.ok) throw new Error(`AI调用失败：${response.status} ${body.slice(0, 300)}`);
+  const data = JSON.parse(body);
+  const content = String(data.choices?.[0]?.message?.content || "").trim();
+  if (!content) throw new Error("AI没有返回批改结果。");
+  return content;
+}
+
 function loadSchedules() {
   if (!fs.existsSync(SCHEDULES_PATH)) return [];
   try {
@@ -350,10 +381,43 @@ function loadProjects() {
   if (!fs.existsSync(PROJECTS_PATH)) return [];
   try {
     const data = JSON.parse(fs.readFileSync(PROJECTS_PATH, "utf8"));
-    return Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) return [];
+    let changed = false;
+    const normalized = data.map((item) => {
+      const next = { ...item };
+      const chapters = normalizeWorkspacePath(next.chapters || "");
+      if (chapters !== (next.chapters || "")) {
+        next.chapters = chapters;
+        next.updatedAt = new Date().toISOString();
+        changed = true;
+      }
+      return next;
+    });
+    if (changed) fs.writeFileSync(PROJECTS_PATH, JSON.stringify(normalized, null, 2), "utf8");
+    return normalized;
   } catch {
     return [];
   }
+}
+
+function normalizeWorkspacePath(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const resolved = path.resolve(raw);
+  if (fs.existsSync(resolved)) return resolved;
+
+  const oldRoots = [
+    path.join("C:\\Users\\92003\\Documents", "写小说"),
+    "C:\\Users\\92003\\Documents\\写小说",
+  ].map((item) => path.resolve(item).toLowerCase());
+  const lower = resolved.toLowerCase();
+  for (const oldRoot of oldRoots) {
+    if (!lower.startsWith(oldRoot)) continue;
+    const relative = resolved.slice(oldRoot.length).replace(/^\\+/, "");
+    const migrated = path.join(WORKSPACE_ROOT, relative);
+    if (fs.existsSync(migrated)) return path.resolve(migrated);
+  }
+  return resolved;
 }
 
 function saveProjects() {
@@ -376,7 +440,7 @@ function projectSummary(project) {
 }
 
 function upsertProject(input = {}) {
-  const chapters = input.chapters ? path.resolve(input.chapters) : "";
+  const chapters = input.chapters ? normalizeWorkspacePath(input.chapters) : "";
   const name = String(input.name || input.book || (chapters ? path.basename(path.dirname(chapters)) : "") || "未命名作品").trim();
   if (!chapters) throw new Error("项目档案需要章节目录。");
   const id = String(input.id || safeWorkName(`${name}_${chapters}`).slice(0, 120));
@@ -943,6 +1007,15 @@ function readJsonSafe(filePath) {
   }
 }
 
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+}
+
+function isInsideDir(parent, child) {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative === "" || Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
 function listChapterFiles(chaptersDir) {
   const files = [];
   if (!fs.existsSync(chaptersDir)) return files;
@@ -1053,6 +1126,76 @@ function fixChapterFormats(options = {}) {
   }
   if (changed.length > 30) appendLog(`还有 ${changed.length - 30} 章已修复，日志省略。`);
   return { ok: true, chapters: chaptersDir, scanned: scanned.length, changed };
+}
+
+function cleanChapterProductionRefs(raw) {
+  const original = String(raw || "");
+  const lines = original.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const refs = [
+    /第\s*[0-9０-９零〇一二两三四五六七八九十百千万]+\s*章\s*(?:末|末尾|中|中段|里|内|开头|前半|后半)\s*[，,、；;：:]?/g,
+    /在\s*第\s*[0-9０-９零〇一二两三四五六七八九十百千万]+\s*章\s*(?:末|末尾|中|中段|里|内|开头|前半|后半)\s*[，,、；;：:]?/g,
+  ];
+  let count = 0;
+  const cleaned = lines.map((line, index) => {
+    if (index === 0) return line;
+    let next = line;
+    for (const pattern of refs) {
+      next = next.replace(pattern, (match) => {
+        count += 1;
+        return /[，,、；;：:]$/.test(match) ? "" : "";
+      });
+    }
+    next = next
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/^[，,、；;：:]\s*/, "")
+      .replace(/\s+[，,、；;：:]/g, (match) => match.trim())
+      .trimEnd();
+    return next;
+  }).join("\r\n").replace(/\s+$/g, "") + "\r\n";
+  return { text: cleaned, count };
+}
+
+function cleanChapterRefs(options = {}) {
+  const chaptersDir = path.resolve(options.chapters || MAIN_CHAPTERS_DIR);
+  if (!fs.existsSync(chaptersDir)) throw new Error(`章节目录不存在：${chaptersDir}`);
+  const start = Number(options.start || 1);
+  const end = Number(options.end || Infinity);
+  const changed = [];
+  const scanned = [];
+
+  for (const file of listTxtFilesForFix(chaptersDir)) {
+    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    if (!no || no < start || no > end) continue;
+    scanned.push(no);
+    const raw = fs.readFileSync(file, "utf8");
+    const result = cleanChapterProductionRefs(raw);
+    if (result.count > 0 && result.text !== raw) {
+      fs.writeFileSync(file, result.text, "utf8");
+      changed.push({ no, file, count: result.count });
+    }
+  }
+
+  appendLog(`章节引用清理完成：扫描 ${scanned.length} 章，修改 ${changed.length} 章。`);
+  for (const item of changed.slice(0, 30)) {
+    appendLog(`第 ${item.no} 章：清理 ${item.count} 处章节引用。`);
+  }
+  if (changed.length > 30) appendLog(`还有 ${changed.length - 30} 章已清理，日志省略。`);
+  return { ok: true, chapters: chaptersDir, scanned: scanned.length, changed };
+}
+
+function openStudioFolder(options = {}) {
+  const chaptersDir = path.resolve(options.chapters || "");
+  if (!chaptersDir) throw new Error("缺少章节目录。");
+  if (!fs.existsSync(chaptersDir)) throw new Error(`章节目录不存在：${chaptersDir}`);
+  const folder = path.basename(chaptersDir).toLowerCase() === "chapters"
+    ? path.dirname(chaptersDir)
+    : chaptersDir;
+  if (!isInsideDir(WORKSPACE_ROOT, folder)) {
+    throw new Error(`拒绝打开工作区外目录：${folder}`);
+  }
+  spawn("explorer.exe", [folder], { detached: true, stdio: "ignore", windowsHide: false }).unref();
+  appendLog(`已打开作品文件夹：${folder}`);
+  return { ok: true, folder };
 }
 
 function pureTextCount(text) {
@@ -1248,6 +1391,198 @@ function checkChapterWordCounts(options = {}) {
   return { ok: failed.length === 0, chapters: chaptersDir, minPureChars, scanned: results.length, failed, results };
 }
 
+async function reviewChaptersWithAi(options = {}) {
+  const chaptersDir = path.resolve(options.chapters || MAIN_CHAPTERS_DIR);
+  if (!fs.existsSync(chaptersDir)) throw new Error(`章节目录不存在：${chaptersDir}`);
+  const start = Math.max(1, Number(options.start || 1));
+  const end = Math.max(start, Number(options.end || start));
+  const maxReviewChapters = 20;
+  if (end - start + 1 > maxReviewChapters) {
+    throw new Error(`AI剧情批改一次最多 ${maxReviewChapters} 章，请缩小章节范围。`);
+  }
+
+  const chapters = [];
+  for (const file of listTxtFilesForFix(chaptersDir)) {
+    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    if (!no || no < start || no > end) continue;
+    const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
+    const title = raw.split(/\r?\n/)[0] || `第${no}章`;
+    const body = raw.split(/\r?\n/).slice(1).join("\n").trim() || raw;
+    chapters.push({
+      no,
+      title,
+      text: body.slice(0, 4200),
+      truncated: body.length > 4200,
+    });
+  }
+  if (!chapters.length) throw new Error(`第 ${start}-${end} 章没有找到可批改章节。`);
+
+  appendLog(`AI剧情批改开始：第 ${start}-${end} 章，扫描 ${chapters.length} 章。`);
+  const chapterText = chapters.map((item) => [
+    `【第${item.no}章】${item.title}`,
+    item.text,
+    item.truncated ? "【提示：本章内容较长，已截取前半部分供批改】" : "",
+  ].filter(Boolean).join("\n")).join("\n\n---\n\n");
+
+  const report = await callStudioAi([
+    {
+      role: "system",
+      content: [
+        "你是中文网文剧情质检编辑，只做批改建议，不重写整章正文。",
+        "重点检查：剧情连贯、人物口吻、设定一致、节奏拖沓、重复段落、爽点兑现、结尾钩子、章节之间是否断层。",
+        "输出必须具体到章节，指出问题、原因、修改方向。不要泛泛表扬，不要输出创作说明。",
+      ].join("\n"),
+    },
+    {
+      role: "user",
+      content: [
+        `请批改第 ${start}-${end} 章。`,
+        "输出格式：",
+        "1. 总体判断：是否可以继续发布。",
+        "2. 严重问题：按章节列出，会影响连载一致性的优先。",
+        "3. 可优化问题：节奏、对白、爽点、钩子。",
+        "4. 下一步修改清单：用短句列出最该先改的动作。",
+        "",
+        chapterText,
+      ].join("\n"),
+    },
+  ], { temperature: 0.25 });
+
+  appendLog(`AI剧情批改完成：第 ${start}-${end} 章。`);
+  for (const line of report.split(/\r?\n/).filter(Boolean).slice(0, 80)) {
+    appendLog(`AI批改：${line}`);
+  }
+  return { ok: true, chapters: chaptersDir, start, end, scanned: chapters.length, report };
+}
+
+function readChapterTexts(chaptersDir, start, end) {
+  const chapters = [];
+  for (const file of listTxtFilesForFix(chaptersDir)) {
+    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    if (!no || no < start || no > end) continue;
+    const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
+    const title = raw.split(/\r?\n/)[0] || `第${no}章`;
+    const body = raw.split(/\r?\n/).slice(1).join("\n").trim();
+    chapters.push({ no, file, title, raw, body });
+  }
+  return chapters.sort((a, b) => a.no - b.no);
+}
+
+function normalizeRewrittenChapter(text, fallbackTitle) {
+  let value = String(text || "")
+    .replace(/^```(?:txt|text|markdown|md)?\s*/i, "")
+    .replace(/```$/i, "")
+    .replace(/^\uFEFF/, "")
+    .trim();
+  if (!value) return "";
+  const lines = value.split(/\r?\n/);
+  if (!/^第\s*[0-9零一二三四五六七八九十百千万]+\s*章/.test(lines[0] || "")) {
+    value = `${fallbackTitle}\n\n${value}`;
+  }
+  return value.replace(/\r?\n/g, "\r\n").replace(/\r\n{3,}/g, "\r\n\r\n").trim() + "\r\n";
+}
+
+async function generateRewriteDrafts(options = {}) {
+  const chaptersDir = path.resolve(options.chapters || MAIN_CHAPTERS_DIR);
+  if (!fs.existsSync(chaptersDir)) throw new Error(`章节目录不存在：${chaptersDir}`);
+  const start = Math.max(1, Number(options.start || 1));
+  const end = Math.max(start, Number(options.end || start));
+  const maxRewriteChapters = 10;
+  if (end - start + 1 > maxRewriteChapters) {
+    throw new Error(`生成修改稿一次最多 ${maxRewriteChapters} 章，请缩小章节范围。`);
+  }
+  const review = String(options.review || "").trim();
+  if (!review) throw new Error("缺少 AI剧情批改结果，请先运行 AI剧情批改。");
+
+  const chapters = readChapterTexts(chaptersDir, start, end);
+  if (!chapters.length) throw new Error(`第 ${start}-${end} 章没有找到可修改章节。`);
+
+  const revisionRoot = path.join(path.dirname(chaptersDir), "_ai_revisions");
+  const revisionId = `revision-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`;
+  const revisionDir = path.join(revisionRoot, revisionId);
+  ensureDir(revisionDir);
+
+  appendLog(`生成修改稿开始：第 ${start}-${end} 章，原文不会被覆盖。`);
+  const changed = [];
+  for (const chapter of chapters) {
+    const rewritten = await callStudioAi([
+      {
+        role: "system",
+        content: [
+          "你是中文网文改稿编辑。你只输出修订后的完整章节正文，不输出解释。",
+          "必须保留原章节号和标题在第一行。不得改变已发生剧情、人物关系、世界观设定。",
+          "根据批改意见修复连贯性、人物口吻、节奏、重复、爽点兑现和结尾钩子。",
+          "如果批改意见未涉及本章，只做轻微润色，保持原文风格。",
+        ].join("\n"),
+      },
+      {
+        role: "user",
+        content: [
+          "批改意见：",
+          review.slice(0, 8000),
+          "",
+          "原章节：",
+          chapter.raw,
+          "",
+          "请输出修订后的完整章节，第一行必须是章节标题，后面是正文。",
+        ].join("\n"),
+      },
+    ], { temperature: 0.45 });
+    const text = normalizeRewrittenChapter(rewritten, chapter.title);
+    if (pureTextCount(text) < Math.max(300, Math.floor(pureTextCount(chapter.raw) * 0.6))) {
+      throw new Error(`第 ${chapter.no} 章修改稿过短，已停止保存。`);
+    }
+    const target = path.join(revisionDir, path.basename(chapter.file));
+    fs.writeFileSync(target, text, "utf8");
+    changed.push({ no: chapter.no, source: chapter.file, file: target });
+    appendLog(`第 ${chapter.no} 章修改稿已生成：${target}`);
+  }
+
+  const manifest = {
+    createdAt: new Date().toISOString(),
+    chaptersDir,
+    start,
+    end,
+    review,
+    changed,
+  };
+  fs.writeFileSync(path.join(revisionDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  appendLog(`生成修改稿完成：${revisionDir}`);
+  return { ok: true, chapters: chaptersDir, start, end, scanned: chapters.length, changed, revisionDir };
+}
+
+function applyRewriteDrafts(options = {}) {
+  const chaptersDir = path.resolve(options.chapters || MAIN_CHAPTERS_DIR);
+  if (!fs.existsSync(chaptersDir)) throw new Error(`章节目录不存在：${chaptersDir}`);
+  const revisionRoot = path.join(path.dirname(chaptersDir), "_ai_revisions");
+  const revisionDir = path.resolve(String(options.revisionDir || ""));
+  if (!revisionDir || !isInsideDir(revisionRoot, revisionDir)) {
+    throw new Error("修改稿目录不合法，拒绝覆盖原文。");
+  }
+  const manifestPath = path.join(revisionDir, "manifest.json");
+  const manifest = readJsonSafe(manifestPath);
+  if (!manifest || !Array.isArray(manifest.changed)) throw new Error("修改稿清单不存在或已损坏。");
+  if (path.resolve(manifest.chaptersDir) !== chaptersDir) throw new Error("修改稿不属于当前章节目录，拒绝覆盖。");
+
+  const backupDir = path.join(revisionRoot, `backup-${new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14)}`);
+  ensureDir(backupDir);
+  const applied = [];
+  for (const item of manifest.changed) {
+    const source = path.resolve(item.source);
+    const draft = path.resolve(item.file);
+    if (!isInsideDir(chaptersDir, source)) throw new Error(`原文路径不合法：${source}`);
+    if (!isInsideDir(revisionDir, draft)) throw new Error(`修改稿路径不合法：${draft}`);
+    if (!fs.existsSync(source)) throw new Error(`原文不存在：${source}`);
+    if (!fs.existsSync(draft)) throw new Error(`修改稿不存在：${draft}`);
+    const backup = path.join(backupDir, path.basename(source));
+    fs.copyFileSync(source, backup);
+    fs.copyFileSync(draft, source);
+    applied.push({ no: item.no, file: source, backup });
+  }
+  appendLog(`确认覆盖原文完成：覆盖 ${applied.length} 章，备份目录：${backupDir}`);
+  return { ok: true, chapters: chaptersDir, revisionDir, backupDir, applied };
+}
+
 function chapterSummary(chaptersDir) {
   const files = listChapterFiles(chaptersDir);
   const latest = files.length ? files[files.length - 1] : null;
@@ -1286,10 +1621,13 @@ function listGeneratedWorks() {
         fileCount: chapters.count,
         duplicateCount: chapters.duplicateCount,
         latestChapter: chapters.latestChapter,
-        status: state.status || (chapters.latestChapter ? `正文已到第 ${chapters.latestChapter} 章${chapters.duplicateCount ? `；重复文件 ${chapters.duplicateCount} 个` : ""}` : "待生成"),
-        next: chapters.count ? "质检 / 改写 / 发布包" : "继续生成章节",
+        status: state.status === "needs-repair"
+          ? `待返修：第 ${state.blockedChapter?.no || "-"} 章`
+          : (state.status || (chapters.latestChapter ? `正文已到第 ${chapters.latestChapter} 章${chapters.duplicateCount ? `；重复文件 ${chapters.duplicateCount} 个` : ""}` : "待生成")),
+        next: state.status === "needs-repair" ? "查看 _needs_repair 后重试本章" : (chapters.count ? "质检 / 改写 / 发布包" : "继续生成章节"),
         engine: state.engine || "",
         model: state.model || "",
+        blockedChapter: state.blockedChapter || null,
         path: workDir,
         chaptersPath: chaptersDir,
         updatedAt: chapters.updatedAt || new Date(stat.mtimeMs).toISOString(),
@@ -1452,9 +1790,32 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       return json(res, 200, { ...fixChapterFormats(body), status: getStatus() });
     }
+    if (url.pathname === "/api/studio/clean-chapter-refs" && req.method === "POST") {
+      const body = await readBody(req);
+      return json(res, 200, { ...cleanChapterRefs(body), status: getStatus() });
+    }
+    if (url.pathname === "/api/studio/open-folder" && req.method === "POST") {
+      const body = await readBody(req);
+      return json(res, 200, openStudioFolder(body));
+    }
     if (url.pathname === "/api/studio/check-words" && req.method === "POST") {
       const body = await readBody(req);
       return json(res, 200, { ...checkChapterWordCounts(body), status: getStatus() });
+    }
+    if (url.pathname === "/api/studio/ai-review" && req.method === "POST") {
+      const body = await readBody(req);
+      const review = await reviewChaptersWithAi(body);
+      return json(res, 200, { ...review, status: getStatus() });
+    }
+    if (url.pathname === "/api/studio/rewrite-draft" && req.method === "POST") {
+      const body = await readBody(req);
+      const draft = await generateRewriteDrafts(body);
+      return json(res, 200, { ...draft, status: getStatus() });
+    }
+    if (url.pathname === "/api/studio/apply-rewrite" && req.method === "POST") {
+      const body = await readBody(req);
+      const applied = applyRewriteDrafts(body);
+      return json(res, 200, { ...applied, status: getStatus() });
     }
     if (url.pathname === "/api/schedules" && req.method === "POST") {
       const body = await readBody(req);
