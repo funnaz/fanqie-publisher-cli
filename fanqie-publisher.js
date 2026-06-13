@@ -172,13 +172,46 @@ function safeName(text) {
   return String(text).replace(/[\\/:*?"<>|\s]+/g, "_").slice(0, 120);
 }
 
+function normalizeDigitText(value) {
+  return String(value || "").replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10));
+}
+
+function chineseChapterNumber(value) {
+  const text = normalizeDigitText(value).trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const map = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (!/[十百千]/.test(text)) {
+    return Array.from(text).reduce((total, char) => total * 10 + (map[char] ?? 0), 0);
+  }
+  let total = 0;
+  let current = 0;
+  for (const char of text) {
+    if (char === "千") {
+      total += (current || 1) * 1000;
+      current = 0;
+    } else if (char === "百") {
+      total += (current || 1) * 100;
+      current = 0;
+    } else if (char === "十") {
+      total += (current || 1) * 10;
+      current = 0;
+    } else if (Object.prototype.hasOwnProperty.call(map, char)) {
+      current = map[char];
+    }
+  }
+  return total + current;
+}
+
 function chapterNo(file) {
-  const m = path.basename(file).match(/^(\d+)-/);
-  return m ? Number(m[1]) : 0;
+  const base = path.basename(file, ".txt");
+  const numeric = normalizeDigitText(base).match(/^(\d+)(?:[-_、.\s]|第|章|$)/);
+  if (numeric) return Number(numeric[1]);
+  const titled = base.match(/^第\s*([0-9０-９零〇一二两三四五六七八九十百千万]+)\s*章/);
+  return titled ? chineseChapterNumber(titled[1]) : 0;
 }
 
 function parseChapterHeading(firstLine, fallbackNo, file) {
-  const fallbackTitle = path.basename(file, ".txt").replace(/^\d+-/, "").trim();
+  const fallbackTitle = path.basename(file, ".txt").replace(/^\d+[-_、.\s]*/, "").trim();
   const raw = (firstLine || fallbackTitle).trim();
   const match = raw.match(/^第\s*([0-9零一二三四五六七八九十百千万]+)\s*章\s*[:：、.\-\s]*(.+)$/);
   if (!match) {
@@ -1305,6 +1338,12 @@ async function confirmPublishDialogs(page) {
   let publishSettingsConfirmClicks = 0;
   let genericConfirmClicks = 0;
   for (let i = 0; i < 8; i++) {
+    const handledCheckFirst = await clickBasicCheck(page);
+    if (handledCheckFirst) {
+      await wait(2000);
+      continue;
+    }
+
     const beforeBlock = await detectPublishBlock(page);
     if (beforeBlock) {
       const reason = formatPublishBlockReason(beforeBlock);
@@ -1325,18 +1364,6 @@ async function confirmPublishDialogs(page) {
       continue;
     }
     if (typoModalVisible) return { needsManual: true, reason: "错别字提示弹窗未能精确点击提交" };
-
-    const handledCheck = await clickBasicCheck(page);
-    if (handledCheck) {
-      await wait(2000);
-      const block = await detectPublishBlock(page);
-      if (block) {
-        const reason = formatPublishBlockReason(block);
-        console.log(`发布流程停止：${reason}`);
-        return { blocked: true, reason };
-      }
-      continue;
-    }
 
     const handledPublishSettings = await handlePublishSettings(page);
     if (handledPublishSettings) {
@@ -1423,6 +1450,8 @@ async function detectPublishBlock(page) {
     let hit = null;
     let message = "";
     for (const candidate of candidates) {
+      if (/请选择内容检测方式|仅基础检测|全面检测/.test(candidate)) continue;
+      if (/发布设置|是否使用AI|确认发布/.test(candidate)) continue;
       hit = checks.find((item) => item.re.test(candidate));
       if (hit) {
         message = candidate;

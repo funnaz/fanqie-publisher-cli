@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 AI小说工作室</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-card">
+      <h1>AI小说工作室</h1>
+      <p>登录后进入自己的项目、日志和模型配置。</p>
+      <form id="loginForm" class="login-form">
+        <label>账号
+          <input id="username" autocomplete="username" value="admin">
+        </label>
+        <label>密码
+          <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码">
+        </label>
+        <button class="primary" type="submit">登录</button>
+      </form>
+      <p id="loginMessage" class="login-message">默认账号：admin。首次启动生成的密码在本地 .studio-initial-admin.txt，也可用 STUDIO_ADMIN_PASSWORD 环境变量指定。</p>
+    </section>
+  </main>
+  <script src="./login.js"></script>
+</body>
+</html>

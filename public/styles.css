@@ -22,6 +22,39 @@ body {
     #fff7f2;
 }
 
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+
+.login-shell {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.login-card {
+  border: 1px solid var(--tomato-line);
+  border-radius: 10px;
+  padding: 28px;
+  background: #fffdfa;
+  box-shadow: 0 18px 50px rgba(198, 74, 25, 0.12);
+}
+
+.login-card h1 {
+  margin-bottom: 6px;
+}
+
+.login-form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.login-message {
+  margin-top: 14px;
+  font-size: 13px;
+}
+
 .app {
   max-width: 1180px;
   margin: 0 auto;
@@ -65,6 +98,18 @@ body {
 .topbar-link:hover {
   border-color: var(--tomato);
   background: #fff8f3;
+}
+
+.user-chip {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #fff0e7;
+  color: #8f3514;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 h1, h2, p { margin: 0; }

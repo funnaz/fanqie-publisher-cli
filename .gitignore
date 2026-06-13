@@ -6,6 +6,9 @@ node_modules/
 .fanqie-projects.json
 .studio-ai-config.json
 .studio-runs/
+.studio-users.json
+.studio-users/
+.studio-initial-admin.txt
 *.log
 *.png
 *.html

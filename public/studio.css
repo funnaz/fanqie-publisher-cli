@@ -128,6 +128,18 @@ p {
   background: #fff8f3;
 }
 
+.user-chip {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: #fff0e7;
+  color: #8f3514;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .button.primary:hover {
   border-color: var(--tomato-dark);
   background: linear-gradient(180deg, #ff5a1f, var(--tomato-dark));

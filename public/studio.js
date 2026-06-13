@@ -6,6 +6,22 @@ let statusState = null;
 let lastAiReviewReport = "";
 let lastRevisionDir = "";
 
+async function loadAuth() {
+  const res = await fetch("/api/auth/status");
+  const data = await res.json();
+  if (!data.authenticated) {
+    window.location.href = "/login.html";
+    return null;
+  }
+  $("userChip").textContent = data.user?.displayName || data.user?.username || "已登录";
+  return data.user;
+}
+
+async function logout() {
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.href = "/login.html";
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -443,6 +459,7 @@ async function stopGeneration() {
 }
 
 function bindActions() {
+  $("logoutBtn").addEventListener("click", () => logout().catch(showError));
   $("refreshBtn").addEventListener("click", () => refreshAll().catch(showError));
   $("dryRunBtn").addEventListener("click", () => {
     const latest = overviewState?.mainProject?.latestChapter || overviewState?.mainProject?.chapters || 1;
@@ -540,12 +557,15 @@ function showError(error) {
   $("logs").textContent = `${current}\n[页面] ${error.message || error}`.trim();
 }
 
-bindActions();
-refreshAll().catch(showError);
+loadAuth().then((user) => {
+  if (!user) return;
+  bindActions();
+  refreshAll().catch(showError);
 
-const events = new EventSource("/events");
-events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
-events.addEventListener("log", () => refreshStatus().catch(showError));
+  const events = new EventSource("/events");
+  events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
+  events.addEventListener("log", () => refreshStatus().catch(showError));
+}).catch(showError);
 
 setInterval(() => {
   if (statusState?.running || statusState?.studioRunning) refreshStatus().catch(showError);

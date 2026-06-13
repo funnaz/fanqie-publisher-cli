@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { chromium } = require("playwright");
 
@@ -11,6 +12,10 @@ const SCHEDULES_PATH = path.join(ROOT, ".fanqie-schedules.json");
 const SCHEDULE_HISTORY_PATH = path.join(ROOT, ".fanqie-schedule-history.json");
 const PROJECTS_PATH = path.join(ROOT, ".fanqie-projects.json");
 const STUDIO_AI_CONFIG_PATH = path.join(ROOT, ".studio-ai-config.json");
+const STUDIO_USERS_PATH = path.join(ROOT, ".studio-users.json");
+const STUDIO_INITIAL_PASSWORD_PATH = path.join(ROOT, ".studio-initial-admin.txt");
+const USER_DATA_ROOT = path.join(ROOT, ".studio-users");
+const DEFAULT_USER_ID = "admin";
 const WORKSPACE_ROOT = path.resolve(ROOT, "..");
 const MAIN_NOVEL_DIR = path.join(WORKSPACE_ROOT, "苍生印_重写版");
 const MAIN_CHAPTERS_DIR = path.join(MAIN_NOVEL_DIR, "chapters");
@@ -34,22 +39,32 @@ let currentJob = null;
 let studioJob = null;
 let schedules = loadSchedules();
 let scheduleHistory = loadScheduleHistory();
-let projects = loadProjects();
+ensureUsers();
+const sessions = new Map();
 const scheduleTimers = new Map();
 const clients = new Set();
-const memoryLogs = [];
+const memoryLogsByUser = new Map();
 
-function sendEvent(type, payload) {
+function sendEvent(type, payload, userId = null) {
   const line = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
-  for (const res of clients) res.write(line);
+  for (const client of clients) {
+    if (userId && client.userId !== userId) continue;
+    client.res.write(line);
+  }
 }
 
-function appendLog(message) {
+function memoryLogs(userId = DEFAULT_USER_ID) {
+  if (!memoryLogsByUser.has(userId)) memoryLogsByUser.set(userId, []);
+  return memoryLogsByUser.get(userId);
+}
+
+function appendLog(message, userId = currentJob?.userId || studioJob?.userId || DEFAULT_USER_ID) {
   const entry = { time: new Date().toISOString(), message: String(message) };
-  memoryLogs.push(entry);
-  if (memoryLogs.length > 500) memoryLogs.shift();
-  sendEvent("log", entry);
-  if (typeof getStatus === "function") sendEvent("status", getStatus());
+  const logs = memoryLogs(userId);
+  logs.push(entry);
+  if (logs.length > 500) logs.shift();
+  sendEvent("log", entry, userId);
+  if (typeof getStatus === "function") sendEvent("status", getStatus(userId), userId);
 }
 
 function extractFailureReason(text) {
@@ -84,6 +99,163 @@ function readBody(req) {
       }
     });
   });
+}
+
+function safeUserId(value) {
+  return String(value || DEFAULT_USER_ID).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 60) || DEFAULT_USER_ID;
+}
+
+function userDir(userId) {
+  const dir = path.join(USER_DATA_ROOT, safeUserId(userId));
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function userProjectsPath(userId) {
+  return path.join(userDir(userId), "projects.json");
+}
+
+function userAiConfigPath(userId) {
+  return path.join(userDir(userId), "ai-config.json");
+}
+
+function studioOutputRootForUser(userId = DEFAULT_USER_ID) {
+  if ((userId || DEFAULT_USER_ID) === DEFAULT_USER_ID) return STUDIO_OUTPUT_ROOT;
+  const dir = path.join(STUDIO_ROOT, "用户", safeUserId(userId), "生成作品");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto.pbkdf2Sync(String(password), salt, 120000, 32, "sha256").toString("hex");
+  return { salt, hash };
+}
+
+function readUsers() {
+  try {
+    if (!fs.existsSync(STUDIO_USERS_PATH)) return { users: [] };
+    const data = JSON.parse(fs.readFileSync(STUDIO_USERS_PATH, "utf8"));
+    return data && Array.isArray(data.users) ? data : { users: [] };
+  } catch {
+    return { users: [] };
+  }
+}
+
+function writeUsers(data) {
+  fs.writeFileSync(STUDIO_USERS_PATH, JSON.stringify(data, null, 2), "utf8");
+}
+
+function ensureUsers() {
+  fs.mkdirSync(USER_DATA_ROOT, { recursive: true });
+  const data = readUsers();
+  if (data.users.length) return data;
+  const password = process.env.STUDIO_ADMIN_PASSWORD || crypto.randomBytes(9).toString("base64url");
+  const credential = hashPassword(password);
+  const now = new Date().toISOString();
+  const next = {
+    users: [{
+      id: DEFAULT_USER_ID,
+      username: "admin",
+      displayName: "管理员",
+      role: "admin",
+      password: credential,
+      createdAt: now,
+      updatedAt: now,
+    }],
+  };
+  writeUsers(next);
+  if (!process.env.STUDIO_ADMIN_PASSWORD) {
+    fs.writeFileSync(STUDIO_INITIAL_PASSWORD_PATH, [
+      "AI小说工作室初始管理员账号",
+      "账号：admin",
+      `密码：${password}`,
+      "",
+      "首次登录后请尽快改为正式用户系统或设置 STUDIO_ADMIN_PASSWORD 环境变量。",
+    ].join("\r\n"), "utf8");
+    console.log(`AI小说工作室初始登录账号：admin，密码已写入：${STUDIO_INITIAL_PASSWORD_PATH}`);
+  }
+  return next;
+}
+
+function verifyPassword(password, credential = {}) {
+  if (!credential.salt || !credential.hash) return false;
+  const next = hashPassword(password, credential.salt);
+  return crypto.timingSafeEqual(Buffer.from(next.hash, "hex"), Buffer.from(credential.hash, "hex"));
+}
+
+function parseCookies(req) {
+  const cookies = {};
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const index = part.indexOf("=");
+    if (index < 0) continue;
+    cookies[part.slice(0, index).trim()] = decodeURIComponent(part.slice(index + 1).trim());
+  }
+  return cookies;
+}
+
+function currentUser(req) {
+  const sid = parseCookies(req).studio_session;
+  if (!sid) return null;
+  const session = sessions.get(sid);
+  if (!session || session.expiresAt < Date.now()) {
+    sessions.delete(sid);
+    return null;
+  }
+  session.lastSeenAt = Date.now();
+  return session.user;
+}
+
+function publicUser(user) {
+  return user ? {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName || user.username,
+    role: user.role || "user",
+  } : null;
+}
+
+function setSessionCookie(res, token) {
+  res.setHeader("Set-Cookie", `studio_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", "studio_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+}
+
+function loginUser(username, password) {
+  const users = ensureUsers().users;
+  const user = users.find((item) => item.username === username || item.id === username);
+  if (!user || !verifyPassword(password, user.password)) throw new Error("账号或密码错误。");
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, {
+    user: publicUser(user),
+    createdAt: Date.now(),
+    lastSeenAt: Date.now(),
+    expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  });
+  return { token, user: publicUser(user) };
+}
+
+function isPublicPath(pathname) {
+  return pathname === "/login.html"
+    || pathname === "/login.js"
+    || pathname.endsWith(".css")
+    || pathname.endsWith(".js")
+    || pathname === "/api/auth/status"
+    || pathname === "/api/auth/login"
+    || pathname === "/favicon.ico";
+}
+
+function requireUser(req, res, url) {
+  const user = currentUser(req);
+  if (user) return user;
+  if (url.pathname.startsWith("/api/") || url.pathname === "/events") {
+    json(res, 401, { error: "请先登录。", loginRequired: true });
+    return null;
+  }
+  res.writeHead(302, { Location: "/login.html" });
+  res.end();
+  return null;
 }
 
 function safeFile(filePath) {
@@ -145,6 +317,7 @@ function extractBackendBookFromUrl(value) {
 function buildStudioGenerateArgs(options) {
   fs.mkdirSync(STUDIO_RUNS_DIR, { recursive: true });
   const ai = resolveStudioAiConfig(options);
+  const outputRoot = studioOutputRootForUser(options.userId || DEFAULT_USER_ID);
   const minWords = Math.max(600, Math.min(5000, Number(options.minWords || options.words || 1050)));
   const maxWords = Math.max(minWords, Math.min(5000, Number(options.maxWords || 1300)));
   const chapters = Math.max(1, Math.min(2000, Number(options.chapters || 3)));
@@ -160,7 +333,7 @@ function buildStudioGenerateArgs(options) {
     maxWords,
     engine: options.engine === "template" ? "template" : "ai",
     model: ai.model || "",
-    outputRoot: STUDIO_OUTPUT_ROOT,
+    outputRoot,
     action: options.action === "batch" ? "batch" : "project",
     batchSize,
   };
@@ -169,10 +342,12 @@ function buildStudioGenerateArgs(options) {
   return [path.join("scripts", "studio-generator.js"), "--config", configPath];
 }
 
-function loadStudioAiConfig() {
-  if (!fs.existsSync(STUDIO_AI_CONFIG_PATH)) return {};
+function loadStudioAiConfig(userId = DEFAULT_USER_ID) {
+  const scopedPath = userAiConfigPath(userId);
+  const configPath = fs.existsSync(scopedPath) ? scopedPath : STUDIO_AI_CONFIG_PATH;
+  if (!fs.existsSync(configPath)) return {};
   try {
-    const data = JSON.parse(fs.readFileSync(STUDIO_AI_CONFIG_PATH, "utf8"));
+    const data = JSON.parse(fs.readFileSync(configPath, "utf8"));
     return data && typeof data === "object" ? data : {};
   } catch {
     return {};
@@ -199,8 +374,8 @@ function normalizeStudioAiConfig(raw = {}) {
   };
 }
 
-function saveStudioAiConfig(input) {
-  const oldConfig = normalizeStudioAiConfig(loadStudioAiConfig());
+function saveStudioAiConfig(input, userId = DEFAULT_USER_ID) {
+  const oldConfig = normalizeStudioAiConfig(loadStudioAiConfig(userId));
   const provider = input.provider === "local" ? "local" : "cloud";
   const oldProfile = oldConfig.profiles[provider] || {};
   const nextProfile = {
@@ -231,12 +406,12 @@ function saveStudioAiConfig(input) {
     },
     updatedAt: new Date().toISOString(),
   };
-  fs.writeFileSync(STUDIO_AI_CONFIG_PATH, JSON.stringify(next, null, 2), "utf8");
-  return publicStudioAiConfig(resolveStudioAiConfig());
+  fs.writeFileSync(userAiConfigPath(userId), JSON.stringify(next, null, 2), "utf8");
+  return publicStudioAiConfig(resolveStudioAiConfig({ userId }));
 }
 
 function resolveStudioAiConfig(overrides = {}) {
-  const saved = normalizeStudioAiConfig(loadStudioAiConfig());
+  const saved = normalizeStudioAiConfig(loadStudioAiConfig(overrides.userId || DEFAULT_USER_ID));
   const provider = saved.activeProvider || (process.env.AI_BASE_URL ? "local" : "cloud");
   const profile = saved.profiles[provider] || {};
   const baseUrl = (
@@ -342,13 +517,15 @@ function saveScheduleHistory() {
 
 function addScheduleHistory(entry) {
   if (entry.status === "completed" && scheduleCompletionExists(entry)) return;
+  const userId = entry.userId || DEFAULT_USER_ID;
   scheduleHistory.unshift({
     time: new Date().toISOString(),
+    userId,
     ...entry,
   });
   scheduleHistory = scheduleHistory.slice(0, 100);
   saveScheduleHistory();
-  sendEvent("schedule-history", scheduleHistory);
+  sendEvent("schedule-history", scheduleHistoryForUser(userId), userId);
 }
 
 function dedupeScheduleHistory() {
@@ -377,10 +554,12 @@ function scheduleCompletionExists(entry) {
   );
 }
 
-function loadProjects() {
-  if (!fs.existsSync(PROJECTS_PATH)) return [];
+function loadProjects(userId = DEFAULT_USER_ID) {
+  const scopedPath = userProjectsPath(userId);
+  const configPath = fs.existsSync(scopedPath) ? scopedPath : PROJECTS_PATH;
+  if (!fs.existsSync(configPath)) return [];
   try {
-    const data = JSON.parse(fs.readFileSync(PROJECTS_PATH, "utf8"));
+    const data = JSON.parse(fs.readFileSync(configPath, "utf8"));
     if (!Array.isArray(data)) return [];
     let changed = false;
     const normalized = data.map((item) => {
@@ -393,7 +572,7 @@ function loadProjects() {
       }
       return next;
     });
-    if (changed) fs.writeFileSync(PROJECTS_PATH, JSON.stringify(normalized, null, 2), "utf8");
+    if (changed) fs.writeFileSync(scopedPath, JSON.stringify(normalized, null, 2), "utf8");
     return normalized;
   } catch {
     return [];
@@ -420,8 +599,8 @@ function normalizeWorkspacePath(value) {
   return resolved;
 }
 
-function saveProjects() {
-  fs.writeFileSync(PROJECTS_PATH, JSON.stringify(projects, null, 2), "utf8");
+function saveProjects(projects, userId = DEFAULT_USER_ID) {
+  fs.writeFileSync(userProjectsPath(userId), JSON.stringify(projects, null, 2), "utf8");
 }
 
 function projectSummary(project) {
@@ -439,7 +618,8 @@ function projectSummary(project) {
   };
 }
 
-function upsertProject(input = {}) {
+function upsertProject(input = {}, userId = DEFAULT_USER_ID) {
+  let projects = loadProjects(userId);
   const chapters = input.chapters ? normalizeWorkspacePath(input.chapters) : "";
   const name = String(input.name || input.book || (chapters ? path.basename(path.dirname(chapters)) : "") || "未命名作品").trim();
   if (!chapters) throw new Error("项目档案需要章节目录。");
@@ -462,16 +642,17 @@ function upsertProject(input = {}) {
   projects = projects.filter((item) => item.id !== next.id && path.resolve(item.chapters || "") !== chapters);
   projects.unshift(next);
   projects = projects.slice(0, 100);
-  saveProjects();
-  sendEvent("projects", projects.map(projectSummary));
+  saveProjects(projects, userId);
+  sendEvent("projects", projects.map(projectSummary), userId);
   return projectSummary(next);
 }
 
-function deleteProject(id) {
+function deleteProject(id, userId = DEFAULT_USER_ID) {
+  let projects = loadProjects(userId);
   const before = projects.length;
   projects = projects.filter((item) => item.id !== id);
-  saveProjects();
-  sendEvent("projects", projects.map(projectSummary));
+  saveProjects(projects, userId);
+  sendEvent("projects", projects.map(projectSummary), userId);
   return projects.length !== before;
 }
 
@@ -515,7 +696,15 @@ function armAllSchedules() {
   for (const schedule of schedules) armSchedule(schedule);
 }
 
-function createSchedule(options) {
+function schedulesForUser(userId = DEFAULT_USER_ID) {
+  return schedules.filter((schedule) => (schedule.userId || DEFAULT_USER_ID) === userId);
+}
+
+function scheduleHistoryForUser(userId = DEFAULT_USER_ID) {
+  return scheduleHistory.filter((item) => (item.userId || DEFAULT_USER_ID) === userId);
+}
+
+function createSchedule(options, userId = DEFAULT_USER_ID) {
   if (!options.chapters) throw new Error("定时任务需要章节目录。");
   const intervalMinutes = Number(options.intervalMinutes);
   if (![2, 30, 60, 120, 240].includes(intervalMinutes)) throw new Error("间隔只能是 2、30、60、120、240 分钟。");
@@ -536,9 +725,10 @@ function createSchedule(options) {
     backendBook: options.backendBook || extractBackendBookFromUrl(targetUrl),
     mode,
     minChars: options.minChars || 1000,
-  });
+  }, userId);
   const schedule = {
     id: Date.now().toString(),
+    userId,
     name: options.name || `${options.book || path.basename(path.dirname(options.chapters))} 定时发布`,
     chapters: path.resolve(options.chapters),
     book: options.book || "",
@@ -568,30 +758,32 @@ function createSchedule(options) {
   schedules.push(schedule);
   saveSchedules();
   armSchedule(schedule);
-  sendEvent("schedules", schedules.map(scheduleSummary));
+  sendEvent("schedules", schedulesForUser(userId).map(scheduleSummary), userId);
   return scheduleSummary(schedule);
 }
 
-function deleteSchedule(id) {
+function deleteSchedule(id, userId = DEFAULT_USER_ID) {
   const before = schedules.length;
-  schedules = schedules.filter((schedule) => schedule.id !== id);
+  schedules = schedules.filter((schedule) => schedule.id !== id || (schedule.userId || DEFAULT_USER_ID) !== userId);
   if (scheduleTimers.has(id)) {
     clearTimeout(scheduleTimers.get(id));
     scheduleTimers.delete(id);
   }
   saveSchedules();
-  sendEvent("schedules", schedules.map(scheduleSummary));
+  sendEvent("schedules", schedulesForUser(userId).map(scheduleSummary), userId);
   return schedules.length !== before;
 }
 
 function removeSchedule(id) {
+  const schedule = schedules.find((item) => item.id === id);
+  const userId = schedule?.userId || DEFAULT_USER_ID;
   schedules = schedules.filter((schedule) => schedule.id !== id);
   if (scheduleTimers.has(id)) {
     clearTimeout(scheduleTimers.get(id));
     scheduleTimers.delete(id);
   }
   saveSchedules();
-  sendEvent("schedules", schedules.map(scheduleSummary));
+  sendEvent("schedules", schedulesForUser(userId).map(scheduleSummary), userId);
 }
 
 function pruneCompletedSchedules({ silent = true } = {}) {
@@ -608,6 +800,7 @@ function pruneCompletedSchedules({ silent = true } = {}) {
         message: `已到截止章节 ${schedule.maxChapter}，自动删除`,
         maxChapter: schedule.maxChapter,
         publishedTo,
+        userId: schedule.userId || DEFAULT_USER_ID,
       });
       schedules = schedules.filter((item) => item.id !== schedule.id);
       if (scheduleTimers.has(schedule.id)) {
@@ -615,12 +808,14 @@ function pruneCompletedSchedules({ silent = true } = {}) {
         scheduleTimers.delete(schedule.id);
       }
       changed = true;
-      if (!silent) appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动删除。`);
+      if (!silent) appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动删除。`, schedule.userId || DEFAULT_USER_ID);
     }
   }
   if (changed) {
     saveSchedules();
-    sendEvent("schedules", schedules.map(scheduleSummary));
+    for (const userId of new Set(schedules.map((item) => item.userId || DEFAULT_USER_ID))) {
+      sendEvent("schedules", schedulesForUser(userId).map(scheduleSummary), userId);
+    }
   }
 }
 
@@ -640,7 +835,7 @@ function runSchedule(id) {
           maxChapter: schedule.maxChapter,
           status: "completed",
         })) {
-          appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动删除。`);
+          appendLog(`定时任务 ${schedule.name} 已到截止章节 ${schedule.maxChapter}，自动删除。`, schedule.userId || DEFAULT_USER_ID);
         }
         addScheduleHistory({
           name: schedule.name,
@@ -651,13 +846,14 @@ function runSchedule(id) {
           message: `已到截止章节 ${schedule.maxChapter}，自动删除`,
           maxChapter: schedule.maxChapter,
           publishedTo,
+          userId: schedule.userId || DEFAULT_USER_ID,
         });
         schedule.enabled = false;
         removeSchedule(schedule.id);
         return;
       } else {
         const end = Math.min(schedule.maxChapter, start + schedule.batchSize - 1);
-        appendLog(`定时任务 ${schedule.name} 开始发布第 ${start}-${end} 章。`);
+        appendLog(`定时任务 ${schedule.name} 开始发布第 ${start}-${end} 章。`, schedule.userId || DEFAULT_USER_ID);
         addScheduleHistory({
           scheduleId: schedule.id,
           name: schedule.name,
@@ -669,9 +865,11 @@ function runSchedule(id) {
           start,
           end,
           maxChapter: schedule.maxChapter,
+          userId: schedule.userId || DEFAULT_USER_ID,
         });
         startJob({
           ...schedule.options,
+          userId: schedule.userId || DEFAULT_USER_ID,
           scheduleId: schedule.id,
           scheduleName: schedule.name,
           scheduleMaxChapter: schedule.maxChapter,
@@ -683,16 +881,17 @@ function runSchedule(id) {
       }
     }
   } catch (error) {
-    appendLog(`定时任务 ${schedule.name} 启动失败：${error.message || error}`);
+    appendLog(`定时任务 ${schedule.name} 启动失败：${error.message || error}`, schedule.userId || DEFAULT_USER_ID);
   } finally {
     if (schedule.enabled && schedules.some((item) => item.id === schedule.id)) scheduleNextRun(schedule, Date.now());
     saveSchedules();
     if (schedules.some((item) => item.id === schedule.id)) armSchedule(schedule);
-    sendEvent("schedules", schedules.map(scheduleSummary));
+    sendEvent("schedules", schedulesForUser(schedule.userId || DEFAULT_USER_ID).map(scheduleSummary), schedule.userId || DEFAULT_USER_ID);
   }
 }
 
 function startJob(options) {
+  const userId = options.userId || DEFAULT_USER_ID;
   if (currentJob?.process && !currentJob.exited) {
     throw new Error("已有任务正在运行，请先停止或等待完成。");
   }
@@ -710,7 +909,7 @@ function startJob(options) {
       backendBook: options.backendBook || extractBackendBookFromUrl(options.url || ""),
       mode: options.mode || "draft",
       minChars: options.minChars || 1000,
-    });
+    }, userId);
   }
   const args = buildArgs(options);
   const child = spawn(process.execPath, args, {
@@ -722,6 +921,7 @@ function startJob(options) {
     id: Date.now().toString(),
     args,
     options,
+    userId,
     scheduleId: options.scheduleId || null,
     scheduleName: options.scheduleName || "",
     scheduleMaxChapter: options.scheduleMaxChapter || null,
@@ -732,39 +932,40 @@ function startJob(options) {
     failureReason: "",
     pausedForManualReview: false,
   };
-  appendLog(`启动任务：node ${args.join(" ")}`);
+  appendLog(`启动任务：node ${args.join(" ")}`, userId);
   child.stdout.on("data", (data) => {
     const text = data.toString();
     const reason = extractFailureReason(text);
     if (reason) currentJob.failureReason = reason;
     if (isManualPauseMessage(text)) currentJob.pausedForManualReview = true;
-    appendLog(text);
+    appendLog(text, userId);
   });
   child.stderr.on("data", (data) => {
     const text = data.toString();
     const reason = extractFailureReason(text);
     if (reason) currentJob.failureReason = reason;
     if (isManualPauseMessage(text)) currentJob.pausedForManualReview = true;
-    appendLog(text);
+    appendLog(text, userId);
   });
   child.on("exit", (code) => {
     currentJob.exited = true;
     currentJob.exitCode = code;
-    appendLog(`任务结束，退出码：${code}`);
+    appendLog(`任务结束，退出码：${code}`, userId);
     if (code !== 0) {
       const reason = currentJob.failureReason || "脚本返回失败，但没有捕获到明确原因，请查看上方日志和失败截图。";
       currentJob.failureReason = reason;
-      appendLog(`任务失败并已暂停：${reason}`);
+      appendLog(`任务失败并已暂停：${reason}`, userId);
     }
     finalizeScheduledJob(currentJob, code);
-    sendEvent("status", getStatus());
-    setTimeout(() => sendEvent("status", getStatus()), 1000);
+    sendEvent("status", getStatus(userId), userId);
+    setTimeout(() => sendEvent("status", getStatus(userId), userId), 1000);
   });
-  sendEvent("status", getStatus());
+  sendEvent("status", getStatus(userId), userId);
 }
 
 function finalizeScheduledJob(job, code) {
   if (!job?.scheduleId) return;
+  const userId = job.userId || DEFAULT_USER_ID;
   const schedule = schedules.find((item) => item.id === job.scheduleId);
   const progress = summarizeProgress().find((entry) => path.resolve(entry.chapters) === path.resolve(job.options.chapters));
   const publishedTo = progress?.publishedTo || 0;
@@ -781,10 +982,11 @@ function finalizeScheduledJob(job, code) {
     maxChapter: job.scheduleMaxChapter || schedule?.maxChapter || null,
     publishedTo,
     exitCode: code,
+    userId,
   });
   if (schedule && code !== 0) {
     schedule.enabled = false;
-    appendLog(`定时任务 ${schedule.name} 已因本次失败自动暂停，避免继续重复运行。`);
+    appendLog(`定时任务 ${schedule.name} 已因本次失败自动暂停，避免继续重复运行。`, userId);
     saveSchedules();
   }
   if (schedule && code === 0 && publishedTo >= schedule.maxChapter) {
@@ -794,7 +996,7 @@ function finalizeScheduledJob(job, code) {
       maxChapter: schedule.maxChapter,
       status: "completed",
     })) {
-      appendLog(`定时任务 ${schedule.name} 已完成截止章节 ${schedule.maxChapter}，自动删除。`);
+      appendLog(`定时任务 ${schedule.name} 已完成截止章节 ${schedule.maxChapter}，自动删除。`, userId);
     }
     addScheduleHistory({
       scheduleId: schedule.id,
@@ -806,6 +1008,7 @@ function finalizeScheduledJob(job, code) {
       message: `已完成截止章节 ${schedule.maxChapter}，自动删除`,
       maxChapter: schedule.maxChapter,
       publishedTo,
+      userId,
     });
     removeSchedule(schedule.id);
   }
@@ -814,14 +1017,14 @@ function finalizeScheduledJob(job, code) {
 function sendContinue() {
   if (!currentJob?.process || currentJob.exited) return false;
   currentJob.process.stdin.write("\n");
-  appendLog("已发送继续信号。");
+  appendLog("已发送继续信号。", currentJob.userId || DEFAULT_USER_ID);
   return true;
 }
 
 function stopJob() {
   if (!currentJob?.process || currentJob.exited) return false;
   currentJob.process.kill();
-  appendLog("已请求停止任务。");
+  appendLog("已请求停止任务。", currentJob.userId || DEFAULT_USER_ID);
   return true;
 }
 
@@ -847,8 +1050,9 @@ function ensureWritableDir(dir) {
   fs.accessSync(dir, fs.constants.W_OK);
 }
 
-function getStudioHealth() {
-  const ai = resolveStudioAiConfig();
+function getStudioHealth(userId = DEFAULT_USER_ID) {
+  const ai = resolveStudioAiConfig({ userId });
+  const outputRoot = studioOutputRootForUser(userId);
   const issues = [];
   const warnings = [];
   const ok = [];
@@ -860,7 +1064,7 @@ function getStudioHealth() {
   else ok.push("生成脚本可用");
 
   try {
-    ensureWritableDir(STUDIO_OUTPUT_ROOT);
+    ensureWritableDir(outputRoot);
     ok.push("生成目录可写");
   } catch (error) {
     issues.push(`生成目录不可写：${error.message || error}`);
@@ -873,7 +1077,7 @@ function getStudioHealth() {
   if (studioJob?.process && !studioJob.exited) warnings.push("作品生成任务正在运行");
   if (currentJob?.process && !currentJob.exited) warnings.push("发布任务正在运行");
 
-  const generated = listGeneratedWorks();
+  const generated = listGeneratedWorks(userId);
   if (!generated.length) warnings.push("作品库里还没有生成作品");
   else ok.push(`作品库已发现 ${generated.length} 个项目`);
 
@@ -887,7 +1091,7 @@ function getStudioHealth() {
 }
 
 function validateStudioGenerationOptions(options) {
-  const health = getStudioHealth();
+  const health = getStudioHealth(options.userId || DEFAULT_USER_ID);
   const engine = options.engine === "template" ? "template" : "ai";
   const action = options.action === "batch" ? "batch" : "project";
   const title = String(options.title || "").trim();
@@ -904,12 +1108,13 @@ function validateStudioGenerationOptions(options) {
   if (!Number.isFinite(batchSize) || batchSize < 1 || batchSize > 200) throw new Error("续写批量必须在 1-200 章之间。");
   if (engine === "ai" && health.issues.length) throw new Error(`启动前自检未通过：${health.issues.join("；")}`);
   if (action === "batch") {
-    const projectDir = latestProjectDir(STUDIO_OUTPUT_ROOT, title);
+    const projectDir = latestProjectDir(studioOutputRootForUser(options.userId || DEFAULT_USER_ID), title);
     if (!projectDir) throw new Error(`没有找到《${title}》项目包，请先生成项目包。`);
   }
 }
 
 function startStudioGeneration(options) {
+  const userId = options.userId || DEFAULT_USER_ID;
   if (studioJob?.process && !studioJob.exited) {
     throw new Error("已有作品生成任务正在运行，请先等待完成。");
   }
@@ -931,28 +1136,29 @@ function startStudioGeneration(options) {
     id: Date.now().toString(),
     args,
     options,
+    userId,
     process: child,
     startedAt: new Date().toISOString(),
     exited: false,
     exitCode: null,
   };
-  appendLog(`启动作品生成：《${options.title || "未命名小说"}》，${options.action === "batch" ? "续写" : "项目包"}，批量 ${Math.max(1, Math.min(200, Number(options.batchSize || 10)))} 章。`);
-  appendLog(`启动作品生成命令：node ${args.join(" ")}`);
-  child.stdout.on("data", (data) => appendLog(data.toString()));
-  child.stderr.on("data", (data) => appendLog(data.toString()));
+  appendLog(`启动作品生成：《${options.title || "未命名小说"}》，${options.action === "batch" ? "续写" : "项目包"}，批量 ${Math.max(1, Math.min(200, Number(options.batchSize || 10)))} 章。`, userId);
+  appendLog(`启动作品生成命令：node ${args.join(" ")}`, userId);
+  child.stdout.on("data", (data) => appendLog(data.toString(), userId));
+  child.stderr.on("data", (data) => appendLog(data.toString(), userId));
   child.on("exit", (code) => {
     studioJob.exited = true;
     studioJob.exitCode = code;
-    appendLog(`作品生成结束，退出码：${code}`);
-    sendEvent("status", getStatus());
+    appendLog(`作品生成结束，退出码：${code}`, userId);
+    sendEvent("status", getStatus(userId), userId);
   });
-  sendEvent("status", getStatus());
+  sendEvent("status", getStatus(userId), userId);
 }
 
 function stopStudioGeneration() {
   if (!studioJob?.process || studioJob.exited) return false;
   studioJob.process.kill();
-  appendLog("已请求停止作品生成任务。");
+  appendLog("已请求停止作品生成任务。", studioJob.userId || DEFAULT_USER_ID);
   return true;
 }
 
@@ -1016,6 +1222,45 @@ function isInsideDir(parent, child) {
   return relative === "" || Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function normalizeDigitText(value) {
+  return String(value || "").replace(/[０-９]/g, (char) => String(char.charCodeAt(0) - 0xff10));
+}
+
+function chineseChapterNumber(value) {
+  const text = normalizeDigitText(value).trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  const map = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (!/[十百千]/.test(text)) {
+    return Array.from(text).reduce((total, char) => total * 10 + (map[char] ?? 0), 0);
+  }
+  let total = 0;
+  let current = 0;
+  for (const char of text) {
+    if (char === "千") {
+      total += (current || 1) * 1000;
+      current = 0;
+    } else if (char === "百") {
+      total += (current || 1) * 100;
+      current = 0;
+    } else if (char === "十") {
+      total += (current || 1) * 10;
+      current = 0;
+    } else if (Object.prototype.hasOwnProperty.call(map, char)) {
+      current = map[char];
+    }
+  }
+  return total + current;
+}
+
+function chapterNumberFromName(name) {
+  const base = path.basename(String(name || ""), ".txt");
+  const numeric = normalizeDigitText(base).match(/^(\d+)(?:[-_、.\s]|第|章|$)/);
+  if (numeric) return Number(numeric[1]);
+  const titled = base.match(/^第\s*([0-9０-９零〇一二两三四五六七八九十百千万]+)\s*章/);
+  if (titled) return chineseChapterNumber(titled[1]);
+  return 0;
+}
+
 function listChapterFiles(chaptersDir) {
   const files = [];
   if (!fs.existsSync(chaptersDir)) return files;
@@ -1025,13 +1270,13 @@ function listChapterFiles(chaptersDir) {
       if (entry.isDirectory()) {
         visit(fullPath);
       } else if (entry.isFile() && entry.name.endsWith(".txt")) {
-        const match = entry.name.match(/^(\d+)/);
-        if (match) {
+        const number = chapterNumberFromName(entry.name);
+        if (number) {
           const stat = fs.statSync(fullPath);
           files.push({
             path: fullPath,
             name: entry.name,
-            number: Number(match[1]),
+            number,
             mtimeMs: stat.mtimeMs,
           });
         }
@@ -1054,8 +1299,8 @@ function listTxtFilesForFix(dir) {
   };
   walk(dir);
   return files.sort((a, b) => {
-    const an = Number(path.basename(a).match(/^(\d+)/)?.[1] || 0);
-    const bn = Number(path.basename(b).match(/^(\d+)/)?.[1] || 0);
+    const an = chapterNumberFromName(path.basename(a));
+    const bn = chapterNumberFromName(path.basename(b));
     return an - bn || a.localeCompare(b);
   });
 }
@@ -1109,7 +1354,7 @@ function fixChapterFormats(options = {}) {
   const scanned = [];
 
   for (const file of listTxtFilesForFix(chaptersDir)) {
-    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    const no = chapterNumberFromName(path.basename(file));
     if (!no || no < start || no > end) continue;
     scanned.push(no);
     const raw = fs.readFileSync(file, "utf8");
@@ -1164,7 +1409,7 @@ function cleanChapterRefs(options = {}) {
   const scanned = [];
 
   for (const file of listTxtFilesForFix(chaptersDir)) {
-    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    const no = chapterNumberFromName(path.basename(file));
     if (!no || no < start || no > end) continue;
     scanned.push(no);
     const raw = fs.readFileSync(file, "utf8");
@@ -1207,7 +1452,7 @@ function platformCharCount(text) {
 }
 
 function chapterNoFromFile(file) {
-  return Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+  return chapterNumberFromName(path.basename(file));
 }
 
 function buildPublishPreflight(options = {}) {
@@ -1365,7 +1610,7 @@ function checkChapterWordCounts(options = {}) {
   const failed = [];
 
   for (const file of listTxtFilesForFix(chaptersDir)) {
-    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    const no = chapterNumberFromName(path.basename(file));
     if (!no || no < start || no > end) continue;
     const raw = fs.readFileSync(file, "utf8");
     const lines = raw.replace(/^\uFEFF/, "").split(/\r?\n/);
@@ -1403,7 +1648,7 @@ async function reviewChaptersWithAi(options = {}) {
 
   const chapters = [];
   for (const file of listTxtFilesForFix(chaptersDir)) {
-    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    const no = chapterNumberFromName(path.basename(file));
     if (!no || no < start || no > end) continue;
     const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
     const title = raw.split(/\r?\n/)[0] || `第${no}章`;
@@ -1458,7 +1703,7 @@ async function reviewChaptersWithAi(options = {}) {
 function readChapterTexts(chaptersDir, start, end) {
   const chapters = [];
   for (const file of listTxtFilesForFix(chaptersDir)) {
-    const no = Number(path.basename(file).match(/^(\d+)/)?.[1] || 0);
+    const no = chapterNumberFromName(path.basename(file));
     if (!no || no < start || no > end) continue;
     const raw = fs.readFileSync(file, "utf8").replace(/^\uFEFF/, "").trim();
     const title = raw.split(/\r?\n/)[0] || `第${no}章`;
@@ -1605,12 +1850,13 @@ function nextChapterRange(latestChapter, batchSize = 10) {
   return `${start}-${end}`;
 }
 
-function listGeneratedWorks() {
-  if (!fs.existsSync(STUDIO_OUTPUT_ROOT)) return [];
-  return fs.readdirSync(STUDIO_OUTPUT_ROOT, { withFileTypes: true })
+function listGeneratedWorks(userId = DEFAULT_USER_ID) {
+  const outputRoot = studioOutputRootForUser(userId);
+  if (!fs.existsSync(outputRoot)) return [];
+  return fs.readdirSync(outputRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
-      const workDir = path.join(STUDIO_OUTPUT_ROOT, entry.name);
+      const workDir = path.join(outputRoot, entry.name);
       const chaptersDir = path.join(workDir, "chapters");
       const chapters = chapterSummary(chaptersDir);
       const state = readJsonSafe(path.join(workDir, "generation_state.json")) || {};
@@ -1654,7 +1900,7 @@ function librarySummary() {
   };
 }
 
-function getStudioOverview() {
+function getStudioOverview(userId = DEFAULT_USER_ID) {
   const main = chapterSummary(MAIN_CHAPTERS_DIR);
   const progress = summarizeProgress();
   const mainProgress = progress.find((entry) => path.resolve(entry.chapters) === path.resolve(MAIN_CHAPTERS_DIR));
@@ -1674,7 +1920,7 @@ function getStudioOverview() {
     updatedAt: main.updatedAt,
   }];
   if (library) rows.push(library);
-  rows.push(...listGeneratedWorks());
+  rows.push(...listGeneratedWorks(userId));
 
   return {
     updatedAt: new Date().toISOString(),
@@ -1695,56 +1941,83 @@ function getStudioOverview() {
   };
 }
 
-function getStatus() {
-  const ai = resolveStudioAiConfig();
+function jobForUser(job, userId) {
+  if (!job) return null;
+  return (job.userId || DEFAULT_USER_ID) === userId ? job : null;
+}
+
+function getStatus(userId = DEFAULT_USER_ID) {
+  const ai = resolveStudioAiConfig({ userId });
+  const visibleJob = jobForUser(currentJob, userId);
+  const visibleStudioJob = jobForUser(studioJob, userId);
   return {
-    running: Boolean(currentJob?.process && !currentJob.exited),
-    job: currentJob ? {
-      id: currentJob.id,
-      args: currentJob.args,
-      options: currentJob.options,
-      startedAt: currentJob.startedAt,
-      exited: currentJob.exited,
-      exitCode: currentJob.exitCode,
-      failureReason: currentJob.failureReason || "",
-      pausedForManualReview: Boolean(currentJob.pausedForManualReview),
+    running: Boolean(visibleJob?.process && !visibleJob.exited),
+    job: visibleJob ? {
+      id: visibleJob.id,
+      args: visibleJob.args,
+      options: visibleJob.options,
+      startedAt: visibleJob.startedAt,
+      exited: visibleJob.exited,
+      exitCode: visibleJob.exitCode,
+      failureReason: visibleJob.failureReason || "",
+      pausedForManualReview: Boolean(visibleJob.pausedForManualReview),
     } : null,
-    studioJob: studioJob ? {
-      id: studioJob.id,
-      args: studioJob.args,
-      options: studioJob.options,
-      startedAt: studioJob.startedAt,
-      exited: studioJob.exited,
-      exitCode: studioJob.exitCode,
+    studioJob: visibleStudioJob ? {
+      id: visibleStudioJob.id,
+      args: visibleStudioJob.args,
+      options: visibleStudioJob.options,
+      startedAt: visibleStudioJob.startedAt,
+      exited: visibleStudioJob.exited,
+      exitCode: visibleStudioJob.exitCode,
     } : null,
-    studioRunning: Boolean(studioJob?.process && !studioJob.exited),
-    studioOutputRoot: STUDIO_OUTPUT_ROOT,
+    studioRunning: Boolean(visibleStudioJob?.process && !visibleStudioJob.exited),
+    studioOutputRoot: studioOutputRootForUser(userId),
     aiConfig: publicStudioAiConfig(ai),
-    health: getStudioHealth(),
-    projects: projects.map(projectSummary),
+    health: getStudioHealth(userId),
+    user: publicUser(ensureUsers().users.find((item) => item.id === userId)),
+    projects: loadProjects(userId).map(projectSummary),
     progress: summarizeProgress(),
-    schedules: schedules.map(scheduleSummary),
-    scheduleHistory,
-    logs: memoryLogs.slice(-200),
+    schedules: schedulesForUser(userId).map(scheduleSummary),
+    scheduleHistory: scheduleHistoryForUser(userId),
+    logs: memoryLogs(userId).slice(-200),
   };
 }
 
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (url.pathname === "/api/auth/status") {
+      return json(res, 200, { authenticated: Boolean(currentUser(req)), user: publicUser(currentUser(req)) });
+    }
+    if (url.pathname === "/api/auth/login" && req.method === "POST") {
+      const body = await readBody(req);
+      const result = loginUser(String(body.username || "").trim(), String(body.password || ""));
+      setSessionCookie(res, result.token);
+      return json(res, 200, { ok: true, user: result.user });
+    }
+    if (url.pathname === "/api/auth/logout" && req.method === "POST") {
+      const sid = parseCookies(req).studio_session;
+      if (sid) sessions.delete(sid);
+      clearSessionCookie(res);
+      return json(res, 200, { ok: true });
+    }
+    const user = isPublicPath(url.pathname) ? currentUser(req) : requireUser(req, res, url);
+    if (!user && !isPublicPath(url.pathname)) return;
+
     if (url.pathname === "/events") {
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
-      clients.add(res);
-      res.write(`event: status\ndata: ${JSON.stringify(getStatus())}\n\n`);
-      res.write(`event: schedule-history\ndata: ${JSON.stringify(scheduleHistory)}\n\n`);
-      req.on("close", () => clients.delete(res));
+      const client = { res, userId: user.id };
+      clients.add(client);
+      res.write(`event: status\ndata: ${JSON.stringify(getStatus(user.id))}\n\n`);
+      res.write(`event: schedule-history\ndata: ${JSON.stringify(scheduleHistoryForUser(user.id))}\n\n`);
+      req.on("close", () => clients.delete(client));
       return;
     }
-    if (url.pathname === "/api/status") return json(res, 200, getStatus());
+    if (url.pathname === "/api/status") return json(res, 200, getStatus(user.id));
     if (url.pathname === "/api/preflight" && req.method === "POST") {
       const body = await readBody(req);
       return json(res, 200, buildPublishPreflight(body));
@@ -1755,44 +2028,46 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/projects" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, { project: upsertProject(body), projects: projects.map(projectSummary) });
+      return json(res, 200, { project: upsertProject(body, user.id), projects: loadProjects(user.id).map(projectSummary) });
     }
-    if (url.pathname === "/api/projects") return json(res, 200, projects.map(projectSummary));
-    if (url.pathname === "/api/studio/overview") return json(res, 200, getStudioOverview());
-    if (url.pathname === "/api/studio/health") return json(res, 200, getStudioHealth());
+    if (url.pathname === "/api/projects") return json(res, 200, loadProjects(user.id).map(projectSummary));
+    if (url.pathname === "/api/studio/overview") return json(res, 200, getStudioOverview(user.id));
+    if (url.pathname === "/api/studio/health") return json(res, 200, getStudioHealth(user.id));
     if (url.pathname === "/api/studio/ai-config" && req.method === "GET") {
-      return json(res, 200, publicStudioAiConfig());
+      return json(res, 200, publicStudioAiConfig(resolveStudioAiConfig({ userId: user.id })));
     }
     if (url.pathname === "/api/studio/ai-config" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, saveStudioAiConfig(body));
+      return json(res, 200, saveStudioAiConfig(body, user.id));
     }
     if (url.pathname === "/api/start" && req.method === "POST") {
       const body = await readBody(req);
+      body.userId = user.id;
       startJob(body);
-      return json(res, 200, getStatus());
+      return json(res, 200, getStatus(user.id));
     }
     if (url.pathname === "/api/continue" && req.method === "POST") {
-      return json(res, 200, { ok: sendContinue(), status: getStatus() });
+      return json(res, 200, { ok: sendContinue(), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/stop" && req.method === "POST") {
-      return json(res, 200, { ok: stopJob(), status: getStatus() });
+      return json(res, 200, { ok: stopJob(), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/generate" && req.method === "POST") {
       const body = await readBody(req);
+      body.userId = user.id;
       startStudioGeneration(body);
-      return json(res, 200, getStatus());
+      return json(res, 200, getStatus(user.id));
     }
     if (url.pathname === "/api/studio/stop" && req.method === "POST") {
-      return json(res, 200, { ok: stopStudioGeneration(), status: getStatus() });
+      return json(res, 200, { ok: stopStudioGeneration(), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/fix-format" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, { ...fixChapterFormats(body), status: getStatus() });
+      return json(res, 200, { ...fixChapterFormats(body), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/clean-chapter-refs" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, { ...cleanChapterRefs(body), status: getStatus() });
+      return json(res, 200, { ...cleanChapterRefs(body), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/open-folder" && req.method === "POST") {
       const body = await readBody(req);
@@ -1800,37 +2075,37 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname === "/api/studio/check-words" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, { ...checkChapterWordCounts(body), status: getStatus() });
+      return json(res, 200, { ...checkChapterWordCounts(body), status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/ai-review" && req.method === "POST") {
       const body = await readBody(req);
       const review = await reviewChaptersWithAi(body);
-      return json(res, 200, { ...review, status: getStatus() });
+      return json(res, 200, { ...review, status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/rewrite-draft" && req.method === "POST") {
       const body = await readBody(req);
       const draft = await generateRewriteDrafts(body);
-      return json(res, 200, { ...draft, status: getStatus() });
+      return json(res, 200, { ...draft, status: getStatus(user.id) });
     }
     if (url.pathname === "/api/studio/apply-rewrite" && req.method === "POST") {
       const body = await readBody(req);
       const applied = applyRewriteDrafts(body);
-      return json(res, 200, { ...applied, status: getStatus() });
+      return json(res, 200, { ...applied, status: getStatus(user.id) });
     }
     if (url.pathname === "/api/schedules" && req.method === "POST") {
       const body = await readBody(req);
-      return json(res, 200, createSchedule(body));
+      return json(res, 200, createSchedule(body, user.id));
     }
-    if (url.pathname === "/api/schedules") return json(res, 200, schedules.map(scheduleSummary));
-    if (url.pathname === "/api/schedule-history") return json(res, 200, scheduleHistory);
+    if (url.pathname === "/api/schedules") return json(res, 200, schedulesForUser(user.id).map(scheduleSummary));
+    if (url.pathname === "/api/schedule-history") return json(res, 200, scheduleHistoryForUser(user.id));
     if (url.pathname === "/api/progress") return json(res, 200, summarizeProgress());
     if (url.pathname.startsWith("/api/schedules/") && req.method === "DELETE") {
       const id = decodeURIComponent(url.pathname.split("/").at(-1));
-      return json(res, 200, { ok: deleteSchedule(id), schedules: schedules.map(scheduleSummary) });
+      return json(res, 200, { ok: deleteSchedule(id, user.id), schedules: schedulesForUser(user.id).map(scheduleSummary) });
     }
     if (url.pathname.startsWith("/api/projects/") && req.method === "DELETE") {
       const id = decodeURIComponent(url.pathname.split("/").at(-1));
-      return json(res, 200, { ok: deleteProject(id), projects: projects.map(projectSummary) });
+      return json(res, 200, { ok: deleteProject(id, user.id), projects: loadProjects(user.id).map(projectSummary) });
     }
 
     const requested = url.pathname === "/" ? "/index.html" : url.pathname;

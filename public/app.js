@@ -19,6 +19,22 @@ let historyOpen = false;
 let lastFailureJobId = "";
 let projectItems = [];
 
+async function loadAuth() {
+  const res = await fetch("/api/auth/status");
+  const data = await res.json();
+  if (!data.authenticated) {
+    window.location.href = "/login.html";
+    return null;
+  }
+  $("userChip").textContent = data.user?.displayName || data.user?.username || "已登录";
+  return data.user;
+}
+
+async function logout() {
+  await fetch("/api/auth/logout", { method: "POST" });
+  window.location.href = "/login.html";
+}
+
 function appendLog(entry) {
   const text = typeof entry === "string" ? entry : `[${entry.time}] ${entry.message}`;
   logs.textContent += text.endsWith("\n") ? text : `${text}\n`;
@@ -339,11 +355,16 @@ failureModal.addEventListener("click", (event) => {
   if (event.target === failureModal) hideFailure();
 });
 
-const events = new EventSource("/events");
-events.addEventListener("log", (event) => appendLog(JSON.parse(event.data)));
-events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
-events.addEventListener("schedules", (event) => renderSchedules(JSON.parse(event.data)));
-events.addEventListener("schedule-history", (event) => renderScheduleHistory(JSON.parse(event.data)));
-events.addEventListener("projects", (event) => renderProjects(JSON.parse(event.data)));
+loadAuth().then((user) => {
+  if (!user) return;
+  $("logoutBtn").addEventListener("click", () => logout().catch((error) => appendLog(`退出失败：${error.message}`)));
+  const events = new EventSource("/events");
+  events.addEventListener("log", (event) => appendLog(JSON.parse(event.data)));
+  events.addEventListener("status", (event) => renderStatus(JSON.parse(event.data)));
+  events.addEventListener("schedules", (event) => renderSchedules(JSON.parse(event.data)));
+  events.addEventListener("schedule-history", (event) => renderScheduleHistory(JSON.parse(event.data)));
+  events.addEventListener("projects", (event) => renderProjects(JSON.parse(event.data)));
 
-fetch("/api/status").then((res) => res.json()).then(renderStatus);
+  fetch("/api/status").then((res) => res.json()).then(renderStatus);
+  fetch("/api/projects").then((res) => res.json()).then(renderProjects).catch(() => {});
+}).catch((error) => appendLog(`登录状态检查失败：${error.message}`));
